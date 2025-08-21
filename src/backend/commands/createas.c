@@ -13,7 +13,7 @@
  * we must return a tuples-processed count in the QueryCompletion.  (We no
  * longer do that for CTAS ... WITH NO DATA, however.)
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -478,10 +478,6 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 									dest, params, queryEnv, 0);
 	}
 
-	/* GPDB hook for collecting query info */
-	if (query_info_collect_hook)
-		(*query_info_collect_hook)(METRICS_QUERY_SUBMIT, queryDesc);
-
 	if (into->skipData)
 	{
 		/*
@@ -495,6 +491,10 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	}
 	else
 	{
+		/* GPDB hook for collecting query info */
+		if (query_info_collect_hook)
+			(*query_info_collect_hook)(METRICS_QUERY_SUBMIT, queryDesc);
+
 		check_and_unassign_from_resgroup(queryDesc->plannedstmt);
 		queryDesc->plannedstmt->query_mem = ResourceManagerGetQueryMemoryLimit(queryDesc->plannedstmt);
 
@@ -505,7 +505,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			autostats_get_cmdtype(queryDesc, &cmdType, &relationOid);
 
 		/* run the plan to completion */
-		ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
+		ExecutorRun(queryDesc, ForwardScanDirection, 0, true);
 
 		/* and clean up */
 		ExecutorFinish(queryDesc);
@@ -786,11 +786,14 @@ bool
 CreateTableAsRelExists(CreateTableAsStmt *ctas)
 {
 	Oid			nspid;
+	Oid			oldrelid;
+	ObjectAddress address;
 	IntoClause *into = ctas->into;
 
 	nspid = RangeVarGetCreationNamespace(into->rel);
 
-	if (get_relname_relid(into->rel->relname, nspid))
+	oldrelid = get_relname_relid(into->rel->relname, nspid);
+	if (OidIsValid(oldrelid))
 	{
 		if (!ctas->if_not_exists)
 			ereport(ERROR,
@@ -798,7 +801,16 @@ CreateTableAsRelExists(CreateTableAsStmt *ctas)
 					 errmsg("relation \"%s\" already exists",
 							into->rel->relname)));
 
-		/* The relation exists and IF NOT EXISTS has been specified */
+		/*
+		 * The relation exists and IF NOT EXISTS has been specified.
+		 *
+		 * If we are in an extension script, insist that the pre-existing
+		 * object be a member of the extension, to avoid security risks.
+		 */
+		ObjectAddressSet(address, RelationRelationId, oldrelid);
+		checkMembershipInCurrentExtension(&address);
+
+		/* OK to skip */
 		ereport(NOTICE,
 				(errcode(ERRCODE_DUPLICATE_TABLE),
 				 errmsg("relation \"%s\" already exists, skipping",
@@ -838,21 +850,8 @@ CreateIntoRelDestReceiver(IntoClause *intoClause)
 static void
 intorel_startup_dummy(DestReceiver *self, int operation, TupleDesc typeinfo)
 {
-	/*
-	 * In PostgreSQL, this is a no-op, but in GPDB, AO relations do need some
-	 * initialization of state, because the tableam API does not provide a
-	 * good enough interface for handling with this later, we need to
-	 * specifically all the init at start up.
-	 */
-
 	/* See intorel_initplan() for explanation */
-
-	if (RelationIsAoRows(((DR_intorel *)self)->rel))
-		appendonly_dml_init(((DR_intorel *)self)->rel, CMD_INSERT);
-	else if (RelationIsAoCols(((DR_intorel *)self)->rel))
-		aoco_dml_init(((DR_intorel *)self)->rel, CMD_INSERT);
-	else if (ext_dml_init_hook)
-		ext_dml_init_hook(((DR_intorel *)self)->rel, CMD_INSERT);
+	table_dml_init(((DR_intorel *)self)->rel, CMD_INSERT);
 }
 
 /*
@@ -1602,9 +1601,9 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 	index->excludeOpNames = NIL;
 	index->idxcomment = NULL;
 	index->indexOid = InvalidOid;
-	index->oldNode = InvalidOid;
+	index->oldNumber = InvalidOid;
 	index->oldCreateSubid = InvalidSubTransactionId;
-	index->oldFirstRelfilenodeSubid = InvalidSubTransactionId;
+	index->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
 	index->transformed = true;
 	index->concurrent = false;
 	index->if_not_exists = false;
@@ -1721,6 +1720,7 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 						  InvalidOid,
 						  InvalidOid,
 						  InvalidOid,
+						  -1,
 						  false, true, false, false, true);
 
 	ereport(NOTICE,
@@ -1805,7 +1805,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	i = 1;
 	foreach(lc, query->targetList)
 	{
-		TargetEntry *tle = (TargetEntry *) flatten_join_alias_vars(query, lfirst(lc));
+		TargetEntry *tle = (TargetEntry *) flatten_join_alias_vars(NULL, query, lfirst(lc));
 
 		if (IsA(tle->expr, Var))
 		{
@@ -1832,7 +1832,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	}
 
 	/* Collect RTE indexes of relations appearing in the FROM clause */
-	rels_in_from = get_relids_in_jointree((Node *) query->jointree, false);
+	rels_in_from = get_relids_in_jointree((Node *) query->jointree, false, false);
 
 	/*
 	 * Check if all key attributes of relations in FROM are appearing in the target

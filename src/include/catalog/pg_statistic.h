@@ -6,7 +6,7 @@
  *
  * Portions Copyright (c) 2006-2010, Greenplum inc.
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_statistic.h
@@ -145,8 +145,7 @@ typedef FormData_pg_statistic *Form_pg_statistic;
 
 DECLARE_TOAST(pg_statistic, 2840, 2841);
 
-DECLARE_UNIQUE_INDEX_PKEY(pg_statistic_relid_att_inh_index, 2696, on pg_statistic using btree(starelid oid_ops, staattnum int2_ops, stainherit bool_ops));
-#define StatisticRelidAttnumInhIndexId	2696
+DECLARE_UNIQUE_INDEX_PKEY(pg_statistic_relid_att_inh_index, 2696, StatisticRelidAttnumInhIndexId, on pg_statistic using btree(starelid oid_ops, staattnum int2_ops, stainherit bool_ops));
 
 DECLARE_FOREIGN_KEY((starelid, staattnum), pg_attribute, (attrelid, attnum));
 
@@ -286,6 +285,18 @@ DECLARE_FOREIGN_KEY((starelid, staattnum), pg_attribute, (attrelid, attnum));
  * bounds.  Only non-NULL, non-empty ranges are included.
  */
 #define STATISTIC_KIND_BOUNDS_HISTOGRAM  7
+
+/*
+ * Used to calculate the summary of ndv on the segment.
+ * It will be used to count the number of rows produced
+ * when optimizer generating the partial agg node, and 
+ * thus calculate the cost value of the operator.
+ * 
+ * In the past, partial agg used histogram (on master) 
+ * data to calculate NDV, which may be quite different
+ * from the NDV on the segment.
+ */
+#define STATISTIC_KIND_NDV_BY_SEGMENTS  8
 
 /*
  * A "hyperloglog" slot stores the hyperloglog_counter created for sampled data.

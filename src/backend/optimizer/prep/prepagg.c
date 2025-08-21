@@ -22,7 +22,7 @@
  * at executor startup.  The Agg nodes are constructed much later in the
  * planning, however, so it's not trivial.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -53,16 +53,6 @@
 #include "utils/syscache.h"
 
 static bool preprocess_aggrefs_walker(Node *node, PlannerInfo *root);
-static int	find_compatible_agg(PlannerInfo *root, Aggref *newagg,
-								List **same_input_transnos);
-static int	find_compatible_trans(PlannerInfo *root, Aggref *newagg,
-								  bool shareable,
-								  Oid aggtransfn, Oid aggtranstype,
-								  int transtypeLen, bool transtypeByVal,
-								  Oid aggcombinefn,
-								  Oid aggserialfn, Oid aggdeserialfn,
-								  Datum initValue, bool initValueIsNull,
-								  List *transnos);
 static Datum GetAggInitVal(Datum textInitVal, Oid transtype);
 
 /* -----------------
@@ -220,19 +210,20 @@ preprocess_aggref(Aggref *aggref, PlannerInfo *root)
 	 * 1. See if this is identical to another aggregate function call that
 	 * we've seen already.
 	 */
-	aggno = find_compatible_agg(root, aggref, &same_input_transnos);
+	aggno = find_compatible_agg(root->agginfos, aggref, &same_input_transnos);
 	if (aggno != -1)
 	{
-		AggInfo    *agginfo = list_nth(root->agginfos, aggno);
+		AggInfo    *agginfo = list_nth_node(AggInfo, root->agginfos, aggno);
 
+		agginfo->aggrefs = lappend(agginfo->aggrefs, aggref);
 		transno = agginfo->transno;
 	}
 	else
 	{
-		AggInfo    *agginfo = palloc(sizeof(AggInfo));
+		AggInfo    *agginfo = makeNode(AggInfo);
 
 		agginfo->finalfn_oid = aggfinalfn;
-		agginfo->representative_aggref = aggref;
+		agginfo->aggrefs = list_make1(aggref);
 		agginfo->shareable = shareable;
 
 		aggno = list_length(root->agginfos);
@@ -266,7 +257,7 @@ preprocess_aggref(Aggref *aggref, PlannerInfo *root)
 		 * 2. See if this aggregate can share transition state with another
 		 * aggregate that we've initialized already.
 		 */
-		transno = find_compatible_trans(root, aggref, shareable,
+		transno = find_compatible_trans(root->aggtransinfos, shareable,
 										aggtransfn, aggtranstype,
 										transtypeLen, transtypeByVal,
 										aggcombinefn,
@@ -275,7 +266,7 @@ preprocess_aggref(Aggref *aggref, PlannerInfo *root)
 										same_input_transnos);
 		if (transno == -1)
 		{
-			AggTransInfo *transinfo = palloc(sizeof(AggTransInfo));
+			AggTransInfo *transinfo = makeNode(AggTransInfo);
 
 			transinfo->args = aggref->args;
 			transinfo->aggfilter = aggref->aggfilter;
@@ -315,10 +306,30 @@ preprocess_aggref(Aggref *aggref, PlannerInfo *root)
 				 * functions; if not, we can't serialize partial-aggregation
 				 * results.
 				 */
-				else if (transinfo->aggtranstype == INTERNALOID &&
-						 (!OidIsValid(transinfo->serialfn_oid) ||
-						  !OidIsValid(transinfo->deserialfn_oid)))
-					root->hasNonSerialAggs = true;
+				else if (transinfo->aggtranstype == INTERNALOID)
+				{
+
+					if (!OidIsValid(transinfo->serialfn_oid) ||
+						!OidIsValid(transinfo->deserialfn_oid))
+						root->hasNonSerialAggs = true;
+
+					/*
+					 * array_agg_serialize and array_agg_deserialize make use
+					 * of the aggregate non-byval input type's send and
+					 * receive functions.  There's a chance that the type
+					 * being aggregated has one or both of these functions
+					 * missing.  In this case we must not allow the
+					 * aggregate's serial and deserial functions to be used.
+					 * It would be nice not to have special case this and
+					 * instead provide some sort of supporting function within
+					 * the aggregate to do this, but for now, that seems like
+					 * overkill for this one case.
+					 */
+					if ((transinfo->serialfn_oid == F_ARRAY_AGG_SERIALIZE ||
+						 transinfo->deserialfn_oid == F_ARRAY_AGG_DESERIALIZE) &&
+						!agg_args_support_sendreceive(aggref))
+						root->hasNonSerialAggs = true;
+				}
 			}
 		}
 		agginfo->transno = transno;
@@ -367,8 +378,8 @@ preprocess_aggrefs_walker(Node *node, PlannerInfo *root)
  * passed later to find_compatible_trans, to see if we can at least reuse
  * the state value of another aggregate.
  */
-static int
-find_compatible_agg(PlannerInfo *root, Aggref *newagg,
+int
+find_compatible_agg(List *agginfos, Aggref *newagg,
 					List **same_input_transnos)
 {
 	ListCell   *lc;
@@ -390,14 +401,14 @@ find_compatible_agg(PlannerInfo *root, Aggref *newagg,
 	 * same transition function will be checked later.)
 	 */
 	aggno = -1;
-	foreach(lc, root->agginfos)
+	foreach(lc, agginfos)
 	{
-		AggInfo    *agginfo = (AggInfo *) lfirst(lc);
+		AggInfo    *agginfo = lfirst_node(AggInfo, lc);
 		Aggref	   *existingRef;
 
 		aggno++;
 
-		existingRef = agginfo->representative_aggref;
+		existingRef = linitial_node(Aggref, agginfo->aggrefs);
 
 		/* all of the following must be the same or it's no match */
 		if (newagg->inputcollid != existingRef->inputcollid ||
@@ -445,8 +456,8 @@ find_compatible_agg(PlannerInfo *root, Aggref *newagg,
  * transition function and initial condition. (The inputs have already been
  * verified to match.)
  */
-static int
-find_compatible_trans(PlannerInfo *root, Aggref *newagg, bool shareable,
+int
+find_compatible_trans(List *aggtransinfos, bool shareable,
 					  Oid aggtransfn, Oid aggtranstype,
 					  int transtypeLen, bool transtypeByVal,
 					  Oid aggcombinefn,
@@ -463,7 +474,7 @@ find_compatible_trans(PlannerInfo *root, Aggref *newagg, bool shareable,
 	foreach(lc, transnos)
 	{
 		int			transno = lfirst_int(lc);
-		AggTransInfo *pertrans = (AggTransInfo *) list_nth(root->aggtransinfos, transno);
+		AggTransInfo *pertrans = (AggTransInfo *) list_nth(aggtransinfos, transno);
 
 		/*
 		 * if the transfns or transition state types are not the same then the
@@ -555,9 +566,16 @@ get_agg_clause_costs(PlannerInfo *root, AggSplit aggsplit, AggClauseCosts *costs
 	foreach(lc, root->agginfos)
 	{
 		AggInfo    *agginfo = (AggInfo *) lfirst(lc);
-		Aggref	   *aggref = agginfo->representative_aggref;
-		if (aggref->aggdistinct != NIL)
-			costs->distinctAggrefs = lappend(costs->distinctAggrefs, aggref);
+		List 	   *aggrefs = agginfo->aggrefs;
+		ListCell   *lc2;
+
+		foreach(lc2, aggrefs)
+		{
+			Aggref *aggref = lfirst(lc2);
+
+			if (aggref->aggdistinct != NIL)
+				costs->distinctAggrefs = lappend(costs->distinctAggrefs, aggref);
+		}
 	}
 }
 
@@ -583,7 +601,7 @@ compute_agg_clause_costs(PlannerInfo *root, AggSplit aggsplit, AggClauseCosts *c
 
 	foreach(lc, root->aggtransinfos)
 	{
-		AggTransInfo *transinfo = (AggTransInfo *) lfirst(lc);
+		AggTransInfo *transinfo = lfirst_node(AggTransInfo, lc);
 
 		/*
 		 * Add the appropriate component function execution costs to
@@ -687,8 +705,8 @@ compute_agg_clause_costs(PlannerInfo *root, AggSplit aggsplit, AggClauseCosts *c
 
 	foreach(lc, root->agginfos)
 	{
-		AggInfo    *agginfo = (AggInfo *) lfirst(lc);
-		Aggref	   *aggref = agginfo->representative_aggref;
+		AggInfo    *agginfo = lfirst_node(AggInfo, lc);
+		Aggref	   *aggref = linitial_node(Aggref, agginfo->aggrefs);
 
 		/*
 		 * Add the appropriate component function execution costs to

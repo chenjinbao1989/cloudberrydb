@@ -13,13 +13,15 @@
  *
  *
  * NOTES
- *	  See src/backend/utils/misc/guc.c for variable external specification.
+ *	  See src/backend/utils/misc/guc.c for variable external specification
  *
  *-------------------------------------------------------------------------
  */
+#include "catalog/pg_collation_d.h"
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "regex/regex.h"
 #include "utils/guc.h"
 #include "cdb/cdbvars.h"
 #include "libpq-fe.h"
@@ -198,6 +200,8 @@ int			Gp_interconnect_queue_depth = 4;	/* max number of messages
 												 * waiting in rx-queue before
 												 * we drop. */
 int			Gp_interconnect_snd_queue_depth = 2;
+int			Gp_interconnect_mem_size = 10;
+int			Gp_interconnect_cursor_ic_table_size = 128;
 int			Gp_interconnect_timer_period = 5;
 int			Gp_interconnect_timer_checking_period = 20;
 int			Gp_interconnect_default_rtt = 20;
@@ -427,8 +431,8 @@ check_gp_role(char **newval, void **extra, GucSource source)
 	/* Force utility mode in a stand-alone backend. */
 	if (!IsPostmasterEnvironment && newrole != GP_ROLE_UTILITY)
 	{
-		elog(LOG, "gp_role forced to 'utility' in single-user mode");
-		*newval = strdup("utility");
+		elog(DEBUG1, "gp_role forced to 'utility' in single-user mode");
+		*newval = guc_strdup(ERROR, "utility");
 		return true;
 	}
 
@@ -565,6 +569,44 @@ gpvars_show_gp_resource_manager_policy(void)
 			Assert(!"unexpected resource manager policy");
 			return "unknown";
 	}
+}
+
+bool gpvars_check_gp_resource_group_cgroup_parent(char **newval, void **extra, GucSource source)
+{
+	int		  regres;
+	char	  err[128];
+	regex_t  re;
+	char	 *pattern = "^[0-9a-zA-Z][-._0-9a-zA-Z]*$";
+	pg_wchar *wpattern = palloc((strlen(pattern) + 1) * sizeof(pg_wchar));
+	int		  wlen = pg_mb2wchar_with_len(pattern, wpattern, strlen(pattern));
+	pg_wchar *data = palloc((strlen(*newval) + 1) * sizeof(pg_wchar));
+	int		  data_len = pg_mb2wchar_with_len(*newval, data, strlen(*newval));
+	bool	  match = true;
+
+	regres = pg_regcomp(&re, wpattern, wlen, REG_ADVANCED, DEFAULT_COLLATION_OID);
+	if (regres != REG_OKAY)
+	{
+		pg_regerror(regres, &re, err, sizeof(err));
+		GUC_check_errmsg("compile regex failed: %s", err);
+
+		pfree(wpattern);
+		pfree(data);
+
+		return false;
+	}
+
+	regres = pg_regexec(&re, data, data_len, 0, NULL, 0, NULL, 0);
+	if (regres != REG_OKAY)
+	{
+		match = false;
+		GUC_check_errmsg("gp_resource_group_cgroup_parent can only contains alphabet, number and non-leading . _ -");
+	}
+
+	pg_regfree(&re);
+	pfree(wpattern);
+	pfree(data);
+
+	return match;
 }
 
 /*

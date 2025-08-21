@@ -2,7 +2,7 @@
 -- CBDB PARALLEL
 -- Test CBDB style parallel plan.
 -- GUCs shoule be set with local, do not disturb other parallel plans.
--- Should not use force_parallel_mode as it will ignore plan and check results only.
+-- Should not use debug_parallel_query as it will ignore plan and check results only.
 -- We want to check plan in this file!
 -- If there is need to do that, set it local inside a transaction.
 -- Set optimizer off in this file, ORCA parallel is not supported.
@@ -31,7 +31,7 @@
 --  12  CdbLocusType_HashedWorkers
 --
 --
-set force_parallel_mode = 0;
+set debug_parallel_query=off;
 set optimizer = off;
 
 create schema test_parallel;
@@ -220,7 +220,7 @@ set local enable_parallel = on;
 create index on t1(c2);
 insert into t1 select i, i from generate_series(1, 10000000) i;
 analyze t1;
-set local force_parallel_mode = 1;
+set local debug_parallel_query=regress;
 set local enable_seqscan = off;
 explain(locus, costs off) select c2 from t1;
 -- results check
@@ -619,7 +619,7 @@ explain (locus, costs off) select * from rt1 union all select * from rt2;
 explain (locus, costs off) select * from rt1 union all select * from t1;
 -- SegmentGeneralWorkers (Converted to Strewn, Limited on One Segment) + Hashed = Strewn
 explain (locus, costs off) select * from rt1 union all select * from t2;
--- SingleQE as subquery seems cannot produce partial_pathlist and don't have chance to parallel append.
+-- partial subpath under UNION ALL
 explain (locus, costs off) select a from rt1 union all select count(*) as a from sq1;
 -- SegmentGeneralWorkers + General = SegmentGeneralWorkers
 explain (locus, costs off) select a from rt1 union all select a from generate_series(1, 1000) a;
@@ -897,7 +897,7 @@ abort;
 begin;
 set local optimizer=off;
 set local enable_parallel=on;
-set local force_parallel_mode =1 ;
+set local debug_parallel_query=regress;
 set local min_parallel_table_scan_size = 0;
 create table semi_t1 (c1 integer) with(parallel_workers=2) distributed randomly;
 create table semi_t2 (c2 integer) with(parallel_workers=2) distributed randomly;
@@ -986,10 +986,223 @@ select t1_anti.a, t1_anti.b from t1_anti left join t2_anti on t1_anti.a = t2_ant
 select t1_anti.a, t1_anti.b from t1_anti left join t2_anti on t1_anti.a = t2_anti.a where t2_anti.a is null;
 abort;
 
+--
+-- Test Parallel DISTINCT
+--
+drop table if exists t_distinct_0;
+create table t_distinct_0(a int, b int) using ao_column distributed randomly;
+insert into t_distinct_0 select i, i+1 from generate_series(1, 1000) i;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+insert into t_distinct_0 select * from t_distinct_0;
+analyze t_distinct_0;
+explain(costs off)
+select distinct a from t_distinct_0;
+set enable_parallel = on;
+-- first stage HashAgg, second stage GroupAgg
+explain(costs off)
+select distinct a from t_distinct_0;
+set parallel_query_use_streaming_hashagg = off;
+explain(costs off)
+select distinct a from t_distinct_0;
+-- GroupAgg
+set enable_hashagg = off;
+explain(costs off)
+select distinct a from t_distinct_0;
+-- HashAgg
+set enable_hashagg = on;
+set enable_groupagg = off;
+explain(costs off)
+select distinct a from t_distinct_0;
+set parallel_query_use_streaming_hashagg = on;
+explain(costs off)
+select distinct a from t_distinct_0;
+-- multi DISTINCT tlist
+explain(costs off)
+select distinct a, b from t_distinct_0;
+
+-- DISTINCT on distribution key 
+drop table if exists t_distinct_1;
+create table t_distinct_1(a int, b int) using ao_column;
+insert into t_distinct_1 select * from t_distinct_0;
+analyze t_distinct_1;
+set enable_parallel = off;
+explain(costs off)
+select distinct a from t_distinct_1;
+set enable_parallel = on;
+explain(costs off)
+select distinct a from t_distinct_1;
+
+--
+-- End of test Parallel DISTINCT
+--
+
+--
+-- Test Parallel UNION
+--
+set enable_parallel = off;
+explain(costs off)
+select distinct a from t_distinct_0 union select distinct b from t_distinct_0;
+set enable_parallel = on;
+set enable_groupagg = off;
+set enable_hashagg = on;
+explain(costs off)
+select distinct a from t_distinct_0 union select distinct b from t_distinct_0;
+reset enable_groupagg;
+set enable_hashagg = off;
+set enable_groupagg = on;
+explain(costs off)
+select distinct a from t_distinct_0 union select distinct b from t_distinct_0;
+reset enable_groupagg;
+reset enable_hashagg;
+explain(costs off)
+select distinct a from t_distinct_0 union select distinct b from t_distinct_0;
+reset enable_parallel;
+--
+-- End of test Parallel UNION
+--
+
+--
+-- Test Parallel Subquery.
+--
+CREATE TABLE departments (
+    department_id INT PRIMARY KEY,
+    department_name VARCHAR(100)
+);
+
+CREATE TABLE employees (
+    employee_id INT PRIMARY KEY,
+    name VARCHAR(100),
+    salary NUMERIC,
+    department_id INT
+);
+
+INSERT INTO departments VALUES 
+(1, 'Sales'),
+(2, 'IT'),
+(3, 'HR');
+
+INSERT INTO employees VALUES
+(1, 'Alice', 5000, 1),
+(2, 'Bob', 6000, 1),
+(3, 'Charlie', 7000, 2),
+(4, 'David', 8000, 2),
+(5, 'Eve', 9000, 3);
+
+set enable_parallel = off;
+explain SELECT e.name
+FROM employees e
+WHERE e.salary > (
+    SELECT AVG(salary)
+    FROM employees
+    WHERE department_id = e.department_id);
+
+SELECT e.name
+FROM employees e
+WHERE e.salary > (
+    SELECT AVG(salary)
+    FROM employees
+    WHERE department_id = e.department_id);
+
+set enable_parallel = on;
+set min_parallel_table_scan_size = 0;
+
+explain SELECT e.name
+FROM employees e
+WHERE e.salary > (
+    SELECT AVG(salary)
+    FROM employees
+    WHERE department_id = e.department_id);
+
+SELECT e.name
+FROM employees e
+WHERE e.salary > (
+    SELECT AVG(salary)
+    FROM employees
+    WHERE department_id = e.department_id);
+
+--
+-- Test https://github.com/apache/cloudberry/issues/1376
+--
+create table t1(a int, b int);
+create table t2 (like t1);
+set gp_cte_sharing = on;
+
+explain(locus, costs off) with x as
+  (select a, count(*) as b from t1 group by a union all
+    select a, count(*) as b from t2 group by a)
+  select count(*) from x a join x b on a.a = b.b;
+
+reset gp_cte_sharing;
+reset enable_parallel;
+reset min_parallel_table_scan_size;
+
+--
+-- Parallel Hash Full/Right Join
+--
+begin;
+create table pj_t1(id int, v int) with(parallel_workers=2) distributed by (id);
+create table pj_t2(id int, v int) with(parallel_workers=2) distributed by (id);
+create table pj_t3(id int, v int) with(parallel_workers=0) distributed by (id);
+
+-- pj_t1 is 3x larger than pj_t2 so the planner hashes the smaller pj_t2
+-- and probes with pj_t1, producing a genuine Parallel Hash Right Join plan.
+insert into pj_t1 select i, i from generate_series(1,30000)i;
+insert into pj_t2 select i, i from generate_series(25001,35000)i;
+insert into pj_t3 select i, i from generate_series(1,10000)i;
+analyze pj_t1;
+analyze pj_t2;
+analyze pj_t3;
+
+set local enable_parallel = on;
+set local min_parallel_table_scan_size = 0;
+
+-- 12_P_12_10: Parallel Hash Full Join: HashedWorkers FULL JOIN HashedWorkers -> HashedOJ(parallel)
+explain(costs off, locus)
+select count(*) from pj_t1 full join pj_t2 using (id);
+-- correctness: parallel result matches non-parallel
+set local enable_parallel = off;
+select count(*) from pj_t1 full join pj_t2 using (id);
+set local enable_parallel = on;
+select count(*) from pj_t1 full join pj_t2 using (id);
+
+-- Parallel Hash Right Join: pj_t1 (30K) is larger, so the planner hashes the smaller pj_t2
+-- (10K) as the build side and probes with pj_t1; result locus HashedWorkers(parallel)
+explain(costs off, locus)
+select count(*) from pj_t1 right join pj_t2 using (id);
+-- correctness: parallel result matches non-parallel
+set local enable_parallel = off;
+select count(*) from pj_t1 right join pj_t2 using (id);
+set local enable_parallel = on;
+select count(*) from pj_t1 right join pj_t2 using (id);
+
+-- Locus propagation: HashedOJ(parallel) followed by INNER JOIN with Hashed(serial)
+-- The full join result (HashedOJ,parallel=2) is joined with pj_t3 (Hashed,serial)
+explain(costs off, locus)
+select count(*) from (pj_t1 full join pj_t2 using (id)) fj inner join pj_t3 using (id);
+
+-- Locus propagation: HashedOJ(parallel) followed by FULL JOIN with Hashed(serial)
+explain(costs off, locus)
+select count(*) from (pj_t1 full join pj_t2 using (id)) fj full join pj_t3 using (id);
+
+abort;
+
 -- start_ignore
 drop schema test_parallel cascade;
 -- end_ignore
 
 reset gp_appendonly_insert_files;
-reset force_parallel_mode;
+reset debug_parallel_query;
 reset optimizer;

@@ -152,9 +152,9 @@ class CCPaxAccessMethod final {
                                TupleTableSlot *slot, CommandId cid,
                                Snapshot snapshot, Snapshot crosscheck,
                                bool wait, TM_FailureData *tmfd,
-                               LockTupleMode *lockmode, bool *update_indexes);
+                               LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes);
 
-  static void RelationCopyData(Relation rel, const RelFileNode *newrnode);
+  static void RelationCopyData(Relation rel, const RelFileLocator *newrnode);
 
   static void RelationCopyForCluster(Relation old_heap, Relation new_heap,
                                      Relation old_index, bool use_sort,
@@ -164,7 +164,8 @@ class CCPaxAccessMethod final {
                                      double *num_tuples, double *tups_vacuumed,
                                      double *tups_recently_dead);
 
-  static void RelationSetNewFilenode(Relation rel, const RelFileNode *newrnode,
+  static void RelationSetNewFilenode(Relation rel,
+									 const RelFileLocator *newrlocator,
                                      char persistence,
                                      TransactionId *freeze_xid,
                                      MultiXactId *minmulti);
@@ -197,6 +198,3 @@ class CCPaxAccessMethod final {
 };
 
 }  // namespace pax
-
-extern ext_dml_func_hook_type ext_dml_init_hook;
-extern ext_dml_func_hook_type ext_dml_finish_hook;

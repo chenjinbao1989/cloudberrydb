@@ -3,7 +3,7 @@
  * print.c
  *	  various print routines (used mostly for debugging)
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -564,6 +564,8 @@ plannode_type(Plan *p)
 			return "TupleSplit";
 		case T_WindowAgg:
 			return "WINDOWAGG";
+		case T_WindowHashAgg:
+			return "WINDOWHASHAGG";
 		case T_TableFunctionScan:
 			return "TABLEFUNCTIONSCAN";
 		case T_Unique:
@@ -582,6 +584,8 @@ plannode_type(Plan *p)
 			return "FOREIGNSCAN";
 		case T_SplitUpdate:
 			return "SPLITUPDATE";
+		case T_SplitMerge:
+			return "SPLITMERGE";
 		case T_Gather:
 			return "GATHER";
 		case T_GatherMerge:

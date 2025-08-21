@@ -53,7 +53,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/resowner.h"
-#include "utils/queryjumble.h"
 #include "catalog/pg_class.h"
 
 #include "executor/spi.h"
@@ -428,7 +427,7 @@ pg_hint_plan_add_paths_to_joinrel(PlannerInfo *root,
 static void *external_plan_hint_hook(Query *parse);
 #endif
 static PlannedStmt *pg_hint_plan_planner(Query *parse, const char *query_string, int cursorOptions,
-										 ParamListInfo boundParams);
+										 ParamListInfo boundParams, OptimizerOptions *optimizer_options);
 static RelOptInfo *pg_hint_plan_join_search(PlannerInfo *root,
 											int levels_needed,
 											List *initial_rels);
@@ -3118,7 +3117,7 @@ pg_hint_plan_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
  */
 static PlannedStmt *
 pg_hint_plan_planner(Query *parse, const char *query_string,
-	int cursorOptions, ParamListInfo boundParams)
+	int cursorOptions, ParamListInfo boundParams, OptimizerOptions *optimizer_options)
 {
 	int				save_nestlevel;
 	PlannedStmt	   *result;
@@ -3236,9 +3235,9 @@ pg_hint_plan_planner(Query *parse, const char *query_string,
 		}
 
 		if (prev_planner)
-			result = (*prev_planner) (parse, query_string, cursorOptions, boundParams);
+			result = (*prev_planner) (parse, query_string, cursorOptions, boundParams, optimizer_options);
 		else
-			result = standard_planner(parse, query_string, cursorOptions, boundParams);
+			result = standard_planner(parse, query_string, cursorOptions, boundParams, optimizer_options);
 
 		current_hint_str = prev_hint_str;
 		recurse_level--;
@@ -3298,9 +3297,9 @@ standard_planner_proc:
 	}
 	current_hint_state = NULL;
 	if (prev_planner)
-		result =  (*prev_planner) (parse, query_string, cursorOptions, boundParams);
+		result =  (*prev_planner) (parse, query_string, cursorOptions, boundParams, optimizer_options);
 	else
-		result = standard_planner(parse, query_string, cursorOptions, boundParams);
+		result = standard_planner(parse, query_string, cursorOptions, boundParams, optimizer_options);
 
 	/* The upper-level planner still needs the current hint state */
 	if (HintStateStack != NIL)
@@ -4103,18 +4102,20 @@ find_relid_aliasname(PlannerInfo *root, char *aliasname, List *initial_rels,
  * Return join hint which matches given joinrelids.
  */
 static JoinMethodHint *
-find_join_hint(Relids joinrelids)
+find_join_hint(PlannerInfo *root, Relids joinrelids)
 {
 	List	   *join_hint;
 	ListCell   *l;
-
-	join_hint = current_hint_state->join_hint_level[bms_num_members(joinrelids)];
+	Bitmapset  *baseRelSet;
+	
+	baseRelSet = bms_intersect(joinrelids, root->all_baserels);
+	join_hint = current_hint_state->join_hint_level[bms_num_members(baseRelSet)];
 
 	foreach(l, join_hint)
 	{
 		JoinMethodHint *hint = (JoinMethodHint *) lfirst(l);
 
-		if (bms_equal(joinrelids, hint->joinrelids))
+		if (bms_equal(baseRelSet, hint->joinrelids))
 			return hint;
 	}
 
@@ -4165,7 +4166,7 @@ OuterInnerJoinCreate(OuterInnerRels *outer_inner, LeadingHint *leading_hint,
 	 * If we don't have join method hint, create new one for the
 	 * join combination with all join methods are enabled.
 	 */
-	hint = find_join_hint(join_relids);
+	hint = find_join_hint(root, join_relids);
 	if (hint == NULL)
 	{
 		/*
@@ -4390,7 +4391,7 @@ transform_join_hints(HintState *hstate, PlannerInfo *root, int nbaserel,
 			 * If we don't have join method hint, create new one for the
 			 * join combination with all join methods are enabled.
 			 */
-			hint = find_join_hint(joinrelids);
+			hint = find_join_hint(root, joinrelids);
 			if (hint == NULL)
 			{
 				/*
@@ -4736,7 +4737,7 @@ pg_hint_plan_make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2
 	}
 
 	joinrelids = bms_union(rel1->relids, rel2->relids);
-	hint = find_join_hint(joinrelids);
+	hint = find_join_hint(root, joinrelids);
 	bms_free(joinrelids);
 
 	if (!hint)
@@ -4789,7 +4790,7 @@ pg_hint_plan_add_paths_to_joinrel(PlannerInfo *root,
 	}
 
 	joinrelids = bms_union(outerrel->relids, innerrel->relids);
-	join_hint = find_join_hint(joinrelids);
+	join_hint = find_join_hint(root, joinrelids);
 	bms_free(joinrelids);
 
 	if (join_hint && join_hint->inner_nrels != 0)

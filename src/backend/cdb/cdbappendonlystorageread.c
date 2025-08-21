@@ -65,7 +65,7 @@ AppendOnlyStorageRead_Init(AppendOnlyStorageRead *storageRead,
 						   Oid reloid,
 						   char *title,
 						   AppendOnlyStorageAttributes *storageAttributes,
-						   RelFileNode *relFileNode,
+						   RelFileLocator *relFileNode,
 						   const struct f_smgr_ao *smgrAO)
 {
 	uint8	   *memory;
@@ -437,7 +437,7 @@ AppendOnlyStorageRead_CloseFile(AppendOnlyStorageRead *storageRead)
 	if (storageRead->file == -1)
 		return;
 
-	FileClose(storageRead->file);
+	storageRead->smgrAO->smgr_FileClose(storageRead->file);
 
 	storageRead->file = -1;
 	storageRead->formatVersion = -1;

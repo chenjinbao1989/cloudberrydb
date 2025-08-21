@@ -86,6 +86,7 @@ static bool check_optimizer(bool *newval, void **extra, GucSource source);
 static bool check_verify_gpfdists_cert(bool *newval, void **extra, GucSource source);
 static bool check_dispatch_log_stats(bool *newval, void **extra, GucSource source);
 static bool check_gp_workfile_compression(bool *newval, void **extra, GucSource source);
+static bool check_hot_dr(bool *newval, void **extra, GucSource source);
 
 /* Helper function for guc setter */
 bool gpvars_check_gp_resqueue_priority_default_value(char **newval,
@@ -151,6 +152,9 @@ bool		enable_parallel = false;
 bool		enable_parallel_semi_join = true;
 bool		enable_parallel_dedup_semi_join = true;
 bool		enable_parallel_dedup_semi_reverse_join = true;
+bool		parallel_query_use_streaming_hashagg = false;
+bool		gp_use_streaming_hashagg = true;
+bool		optimizer_use_streaming_hashagg = true;
 int			gp_appendonly_insert_files = 0;
 int			gp_appendonly_insert_files_tuples_range = 0;
 int			gp_random_insert_segments = 0;
@@ -237,6 +241,7 @@ double		gp_resource_group_cpu_limit;
 bool		gp_resource_group_bypass;
 bool		gp_resource_group_bypass_catalog_query;
 bool		gp_resource_group_bypass_direct_dispatch;
+char	   *gp_resource_group_cgroup_parent;
 
 /* Metrics collector debug GUC */
 bool		vmem_process_interrupt = false;
@@ -311,6 +316,8 @@ bool		optimizer_print_group_properties;
 bool		optimizer_print_optimization_context;
 bool		optimizer_print_optimization_stats;
 bool		optimizer_print_xform_results;
+bool		optimizer_print_preprocess_result;
+bool		optimizer_debug_cte;
 
 /* array of xforms disable flags */
 bool		optimizer_xforms[OPTIMIZER_XFORMS_COUNT] = {[0 ... OPTIMIZER_XFORMS_COUNT - 1] = false};
@@ -362,6 +369,8 @@ bool		optimizer_enable_replicated_table;
 bool		optimizer_enable_foreign_table;
 bool		optimizer_enable_right_outer_join;
 bool		optimizer_enable_query_parameter;
+bool		optimizer_force_window_hash_agg;
+int			optimizer_agg_pds_strategy;
 
 /* Optimizer plan enumeration related GUCs */
 bool		optimizer_enumerate_plans;
@@ -419,6 +428,7 @@ bool		optimizer_enable_range_predicate_dpe;
 bool		optimizer_enable_use_distribution_in_dqa;
 bool		optimizer_enable_push_join_below_union_all;
 bool		optimizer_enable_orderedagg;
+bool		optimizer_disable_dynamic_table_scan;
 
 /* Analyze related GUCs for Optimizer */
 bool		optimizer_analyze_root_partition;
@@ -552,6 +562,8 @@ static const struct config_enum_entry gp_autostats_modes[] = {
 static const struct config_enum_entry gp_interconnect_fc_methods[] = {
 	{"loss", INTERCONNECT_FC_METHOD_LOSS},
 	{"capacity", INTERCONNECT_FC_METHOD_CAPACITY},
+	{"loss_advance", INTERCONNECT_FC_METHOD_LOSS_ADVANCE},
+	{"loss_timer", INTERCONNECT_FC_METHOD_LOSS_TIMER},
 	{NULL, 0}
 };
 
@@ -1786,8 +1798,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 	{
 		{"gp_cte_sharing", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("This guc enables sharing of plan fragments for common table expressions."),
-			NULL,
-			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+			NULL
 		},
 		&gp_cte_sharing,
 		false,
@@ -1890,6 +1901,26 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
+		{"gp_use_streaming_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Use streaming hash agg in the first phase for multi-phase aggregations."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&gp_use_streaming_hashagg,
+		true, NULL, NULL
+	},
+
+	{
+		{"optimizer_use_streaming_hashagg", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Use streaming hash agg in ORCA-generated local partial hash aggregations."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_use_streaming_hashagg,
+		true, NULL, NULL
+	},
+
+	{
 		{"gp_force_random_redistribution", PGC_USERSET, CUSTOM_OPTIONS,
 			gettext_noop("Force redistribution of insert for randomly-distributed."),
 			NULL,
@@ -1969,6 +2000,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
+		{"optimizer_print_preprocess_result", PGC_USERSET, LOGGING_WHAT,
+			gettext_noop("Prints the expression tree produced by the optimizer preprocess(every steps). Only worked with debug version of CBDB."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_print_preprocess_result,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"optimizer_print_xform", PGC_USERSET, LOGGING_WHAT,
 			gettext_noop("Prints optimizer transformation information."),
 			NULL,
@@ -2007,6 +2049,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&optimizer_print_xform_results,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"optimizer_debug_cte", PGC_USERSET, LOGGING_WHAT,
+			gettext_noop("Print the debug info of CTE in ORCA. Only worked with debug version of CBDB."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_debug_cte,
 		false,
 		NULL, NULL, NULL
 	},
@@ -2960,15 +3013,6 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
-		{"stats_queue_level", PGC_SUSET, STATS_COLLECTOR,
-			gettext_noop("Collects resource queue-level statistics on database activity."),
-			NULL
-		},
-		&pgstat_collect_queuelevel,
-		false, NULL, NULL
-	},
-
-	{
 		{"create_restartpoint_on_ckpt_record_replay", PGC_SIGHUP, DEVELOPER_OPTIONS,
 			gettext_noop("Creates a restartpoint only on mirror immediately after replaying a checkpoint record."),
 			NULL
@@ -3059,15 +3103,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
-		{"gp_pause_on_restore_point_replay", PGC_SIGHUP, DEVELOPER_OPTIONS,
-		 gettext_noop("Pause recovery when a restore point is replayed."),
+		{"optimizer_disable_dynamic_table_scan", PGC_USERSET, DEVELOPER_OPTIONS,
+		 gettext_noop("Disable the dynamic seq/bitmap/index scan in partition table."),
 		 NULL,
-		 GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
-		},
-		&gp_pause_on_restore_point_replay,
-		false,
-		NULL, NULL, NULL
+		 GUC_NOT_IN_SAMPLE
+		 },
+		 &optimizer_disable_dynamic_table_scan,
+		 false,
+		 NULL, NULL, NULL
 	},
+
 	{
 		{"gp_autostats_allow_nonowner", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Allow automatic stats collection on tables even for users who are not the owner of the relation."),
@@ -3192,6 +3237,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"parallel_query_use_streaming_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("allow to use of streaming hashagg in parallel query for DISTINCT."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&parallel_query_use_streaming_hashagg,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"gp_internal_is_singlenode", PGC_POSTMASTER, UNGROUPED,
 			 gettext_noop("Is in SingleNode mode (no segments). WARNING: user SHOULD NOT set this by any means."),
 			 NULL,
@@ -3252,6 +3307,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"optimizer_force_window_hash_agg", PGC_USERSET, DEVELOPER_OPTIONS,
+		 gettext_noop("Enable create window hash agg."),
+		 NULL,
+		 GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_force_window_hash_agg, // TODO: remove it before merge
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"aqumv_allow_foreign_table", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("allow answer query using materialized views which have foreign or external tables."),
 			NULL,
@@ -3290,6 +3356,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 		&gp_detect_data_correctness,
 		false,
 		NULL, NULL, NULL
+	},
+
+	{
+		{"hot_dr", PGC_POSTMASTER, REPLICATION_STANDBY,
+			gettext_noop("DR Cluster as well as allows connteions and queries"),
+			NULL
+		},
+		&EnableHotDR,
+		false,
+		check_hot_dr, NULL, NULL
 	},
 
 	{
@@ -3487,7 +3563,7 @@ struct config_int ConfigureNamesInt_gp[] =
 			NULL
 		},
 		&gp_appendonly_insert_files,
-		4, 0, 127,
+		0, 0, 127,
 		NULL, NULL, NULL
 	},
 
@@ -3705,6 +3781,27 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&Gp_interconnect_snd_queue_depth,
 		2, 1, 4096,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_mem_size", PGC_USERSET, GP_ARRAY_TUNING,
+			gettext_noop("Sets the maximum size(in MB) of the send/recv queue memory for all connections in the UDP interconnect"),
+			NULL
+		},
+		&Gp_interconnect_mem_size,
+		10, 1, 1024,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_interconnect_cursor_ic_table_size", PGC_USERSET, GP_ARRAY_TUNING,
+			gettext_noop("Sets the size of Cursor History Table in the UDP interconnect"),
+			gettext_noop("You can try to increase it when a UDF which contains many concurrent "
+						 "cursor queries hangs. The default value is 128.")
+		},
+		&Gp_interconnect_cursor_ic_table_size,
+		128, 128, 102400,
 		NULL, NULL, NULL
 	},
 
@@ -4177,7 +4274,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		{"gp_resqueue_priority_local_interval", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("A measure of how often a backend process must consider backing off."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_local_interval,
 		100000, 500, INT_MAX,
@@ -4196,7 +4293,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		{"gp_resqueue_priority_inactivity_timeout", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("If a backend does not report progress in this time (in ms), it is deemed inactive."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_inactivity_timeout,
 		2000, 500, INT_MAX,
@@ -4206,7 +4303,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		{"gp_resqueue_priority_grouping_timeout", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("A backend gives up on finding a better group leader after this timeout (in ms)."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_grouping_timeout,
 		1000, 1000, INT_MAX,
@@ -4449,6 +4546,17 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&optimizer_mdcache_size,
 		16384, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"optimizer_agg_pds_strategy", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Set the strategy of agg required distribution."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_agg_pds_strategy,
+		OPTIMIZER_AGG_PDS_ALL_KEY, OPTIMIZER_AGG_PDS_ALL_KEY, OPTIMIZER_AGG_PDS_EXCLUDE_NON_FIXED,
 		NULL, NULL, NULL
 	},
 
@@ -4820,7 +4928,7 @@ struct config_string ConfigureNamesString_gp[] =
 		{"gp_resqueue_priority_default_value", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("Default weight when one cannot be associated with a statement."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_default_value,
 		"MEDIUM",
@@ -4830,13 +4938,24 @@ struct config_string ConfigureNamesString_gp[] =
 	{
 		{"gp_resource_manager", PGC_POSTMASTER, RESOURCES,
 			gettext_noop("Sets the type of resource manager."),
-			gettext_noop("Only support \"queue\" and \"group\" for now.")
+			gettext_noop("Only support \"queue\", \"group\" and \"group-v2\" for now.")
 		},
 		&gp_resource_manager_str,
 		"queue",
 		gpvars_check_gp_resource_manager_policy,
 		gpvars_assign_gp_resource_manager_policy,
 		gpvars_show_gp_resource_manager_policy,
+	},
+
+	{
+		{"gp_resource_group_cgroup_parent", PGC_POSTMASTER, RESOURCES,
+			gettext_noop("The root of gpdb cgroup hierarchy."),
+			NULL,
+			GUC_SUPERUSER_ONLY
+		},
+		&gp_resource_group_cgroup_parent,
+		"gpdb.service",
+		gpvars_check_gp_resource_group_cgroup_parent, NULL, NULL
 	},
 
 	/* for pljava */
@@ -4996,6 +5115,9 @@ struct config_string ConfigureNamesString_gp[] =
 		{"gp_interconnect_type", PGC_BACKEND, GP_ARRAY_TUNING,
 			gettext_noop("Sets the protocol used for inter-node communication."),
 			gettext_noop("Valid values are \"tcp\", \"udpifc\""
+#ifdef ENABLE_IC_UDP2
+						 ", \"udp2(experimental feature)\""
+#endif /* ENABLE_IC_UDP2 */
 #ifdef ENABLE_IC_PROXY
 						 " and \"proxy\""
 #endif  /* ENABLE_IC_PROXY */
@@ -5004,6 +5126,17 @@ struct config_string ConfigureNamesString_gp[] =
 		&Gp_interconnect_type_str,
 		"udpifc",
 		check_gp_interconnect_type, assign_gp_interconnect_type, show_gp_interconnect_type
+	},
+	{
+		{"gp_pause_on_restore_point_replay", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Specifies the restore point to pause replay on."),
+			gettext_noop("Unlike recovery_target_name, this can be used to continuously set/reset "
+						"how much a standby should replay up to."),
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&gp_pause_on_restore_point_replay,
+		"",
+		NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */
@@ -5261,62 +5394,72 @@ static int guc_array_compare(const void *a, const void *b)
 	return guc_name_compare(namea, nameb);
 }
 
-void gpdb_assign_sync_flag(struct config_generic **guc_variables, int size, bool predefine)
+void gpdb_assign_sync_flag_one(struct config_generic *var, bool predefine)
 {
 	static bool init = false;
 	/* ordering guc_name_array alphabets */
 	if (!init) {
 		sync_guc_num = sizeof(sync_guc_names_array) / sizeof(char *);
 		qsort((void *) sync_guc_names_array, sync_guc_num,
-		      sizeof(char *), guc_array_compare);
+			  sizeof(char *), guc_array_compare);
 
 		unsync_guc_num = sizeof(unsync_guc_names_array) / sizeof(char *);
 		qsort((void *) unsync_guc_names_array, unsync_guc_num,
-		      sizeof(char *), guc_array_compare);
+			  sizeof(char *), guc_array_compare);
 
 		init = true;
 	}
 
-	for (int i = 0; i < size; i ++)
+	/* if the sync flags is defined in guc variable, skip it */
+	if (var->flags & (GUC_GPDB_NEED_SYNC | GUC_GPDB_NO_SYNC))
+		return;
+
+	char *res = (char *) bsearch((void *) &var->name,
+								 (void *) sync_guc_names_array,
+								 sync_guc_num,
+								 sizeof(char *),
+								 guc_array_compare);
+	if (!res)
 	{
-		struct config_generic *var = guc_variables[i];
+		res = (char *) bsearch((void *) &var->name,
+									 (void *) unsync_guc_names_array,
+									 unsync_guc_num,
+									 sizeof(char *),
+									 guc_array_compare);
 
-		/* if the sync flags is defined in guc variable, skip it */
-		if (var->flags & (GUC_GPDB_NEED_SYNC | GUC_GPDB_NO_SYNC))
-			continue;
-
-		char *res = (char *) bsearch((void *) &var->name,
-		                             (void *) sync_guc_names_array,
-		                             sync_guc_num,
-		                             sizeof(char *),
-		                             guc_array_compare);
-		if (!res)
+		/* for predefined guc, we force its name in one array.
+		 * for the third-part libraries gucs introduced by customer
+		 * we assign unsync flags as default.
+		 */
+		if (!res && predefine)
 		{
-			char *res = (char *) bsearch((void *) &var->name,
-			                             (void *) unsync_guc_names_array,
-			                             unsync_guc_num,
-			                             sizeof(char *),
-			                             guc_array_compare);
-
-			/* for predefined guc, we force its name in one array.
-			 * for the third-part libraries gucs introduced by customer
-			 * we assign unsync flags as default.
-			 */
-			if (!res && predefine)
-			{
-				ereport(ERROR,
-				        (errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Neither sync_guc_names_array nor "
-								"unsync_guc_names_array contains predefined "
-								"guc name: %s", var->name)));
-			}
-
-			var->flags |= GUC_GPDB_NO_SYNC;
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+							errmsg("Neither sync_guc_names_array nor "
+								   "unsync_guc_names_array contains predefined "
+								   "guc name: %s", var->name)));
 		}
-		else
-		{
-			var->flags |= GUC_GPDB_NEED_SYNC;
-		}
+
+		var->flags |= GUC_GPDB_NO_SYNC;
+	}
+	else
+	{
+		var->flags |= GUC_GPDB_NEED_SYNC;
+	}
+}
+
+void gpdb_assign_sync_flag(HTAB *guc_tab)
+{
+	HASH_SEQ_STATUS status;
+	GUCHashEntry *entry;
+
+	hash_seq_init(&status, guc_tab);
+	while((entry = hash_seq_search(&status)) != NULL)
+	{
+		struct config_generic *var;
+
+		var = entry->gucvar;
+		gpdb_assign_sync_flag_one(var, true);
 	}
 }
 
@@ -5395,6 +5538,22 @@ check_verify_gpfdists_cert(bool *newval, void **extra, GucSource source)
 }
 
 static bool
+check_hot_dr(bool *newval, void **extra, GucSource source)
+{
+	if (*newval && !EnableHotStandby)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cannot enable \"hot_dr\" when \"hot_standby\" is false")));
+
+	if (*newval && IS_QUERY_DISPATCHER() && !checkGpSegConfigFtsFiles())
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("cannot enable \"hot_dr\" since DR cluster segment configuration file does not exist")));
+
+	return true;
+}
+
+static bool
 check_dispatch_log_stats(bool *newval, void **extra, GucSource source)
 {
 	if (*newval &&
@@ -5463,7 +5622,7 @@ storageOptToString(const StdRdOptions *ao_opts)
 	}
 	appendStringInfo(&buf, "%s=%s", SOPT_CHECKSUM,
 					 ao_opts->checksum ? "true" : "false");
-	ret = strdup(buf.data);
+	ret = guc_strdup(ERROR, buf.data);
 	if (ret == NULL)
 		elog(ERROR, "out of memory");
 	pfree(buf.data);
@@ -5480,12 +5639,14 @@ check_gp_default_storage_options(char **newval, void **extra, GucSource source)
 	/* Value of "appendonly" option if one is specified. */
 	StdRdOptions *newopts;
 
-	newopts = calloc(sizeof(*newopts), 1);
+	newopts = guc_malloc(ERROR, sizeof(*newopts));
 	if (!newopts)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
 
+	memset(newopts, 0, sizeof(*newopts));
+	
 	resetAOStorageOpts(newopts);
 
 	/*
@@ -5506,7 +5667,7 @@ check_gp_default_storage_options(char **newval, void **extra, GucSource source)
 	 * appendonly storage options.
 	 */
 
-	free(*newval);
+	guc_free(*newval);
 	*newval = storageOptToString(newopts);
 	*extra = newopts;
 
@@ -5533,7 +5694,7 @@ assign_gp_default_storage_options(const char *newval, void *extra)
 void
 set_gp_replication_config(const char *name, const char *value)
 {
-	A_Const aconst = {.type = T_A_Const, .val = {.type = T_String, .val.str = pstrdup(value)}};
+	A_Const aconst = {.type = T_A_Const, .val = {.sval = {.type = T_String, .sval = pstrdup(value)}}};
 	List *args = list_make1(&aconst);
 	VariableSetStmt setstmt = {.type = T_VariableSetStmt, .kind = VAR_SET_VALUE, .name = pstrdup(name), .args = args};
 	AlterSystemStmt alterSystemStmt = {.type = T_AlterSystemStmt, .setstmt = &setstmt};

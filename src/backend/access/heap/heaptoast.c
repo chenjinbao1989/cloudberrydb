@@ -4,7 +4,7 @@
  *	  Heap-specific definitions for external and compressed storage
  *	  of variable size attributes.
  *
- * Copyright (c) 2000-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2023, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -106,7 +106,7 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup, in
 MemTuple memtup_toast_insert_or_update(Relation rel, MemTuple newtup, MemTuple oldtup,
 									   MemTupleBinding *pbind, int toast_tuple_target, int options)
 {
-	return (MemTuple) heap_toast_insert_or_update_generic(rel, newtup, oldtup, pbind, toast_tuple_target, options, true);
+	return (MemTuple) heap_toast_insert_or_update_generic(rel, newtup, oldtup, pbind, options, toast_tuple_target, true);
 }
 
 static void *

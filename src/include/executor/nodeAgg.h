@@ -4,7 +4,7 @@
  *	  prototypes for nodeAgg.c
  *
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/nodeAgg.h
@@ -47,6 +47,11 @@ typedef struct AggStatePerTransData
 	 * Is this state value actually being shared by more than one Aggref?
 	 */
 	bool		aggshared;
+
+	/*
+	 * True for ORDER BY and DISTINCT Aggrefs that are not aggpresorted.
+	 */
+	bool		aggsortrequired;
 
 	/*
 	 * Number of aggregated input columns.  This includes ORDER BY expressions
@@ -136,6 +141,9 @@ typedef struct AggStatePerTransData
 	TupleTableSlot *sortslot;	/* current input tuple */
 	TupleTableSlot *uniqslot;	/* used for multi-column DISTINCT */
 	TupleDesc	sortdesc;		/* descriptor of input tuples */
+	Datum		lastdatum;		/* used for single-column DISTINCT */
+	bool		lastisnull;		/* used for single-column DISTINCT */
+	bool		haslast;		/* got a last value for DISTINCT check */
 
 	/*
 	 * These values are working state that is initialized at the start of an
@@ -311,6 +319,29 @@ typedef struct AggStatePerHashData
 	AttrNumber *hashGrpColIdxInput; /* hash col indices in input slot */
 	AttrNumber *hashGrpColIdxHash;	/* indices in hash table tuples */
 	Agg		   *aggnode;		/* original Agg node, for numGroups etc. */
+
+	/*
+	 * Some statistic info of hash table, used for EXPLAIN ANALYZE.
+	 * Note that they are accumulated info and will not be reset even
+	 * after the hash table is reset.
+	 */
+
+	/* number of groups/entries output by the iterator */
+	uint64		num_output_groups;
+	/* number of spilled partitions */
+	uint64		num_spill_parts;
+	/* number of hash table expansions */
+	uint32		num_expansions;
+	/* total number of buckets */
+	uint64      bucket_total;
+	/* number of used buckets */
+	uint64      bucket_used;
+	/* number of all chains */
+	uint64      chain_count;
+	/* total length of all chains */
+	uint64      chain_length_total;
+	/* max chain length */
+	uint32      chain_length_max;
 }			AggStatePerHashData;
 
 

@@ -3,7 +3,7 @@
  * tableamapi.c
  *		Support routines for API for Postgres table access methods
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/table/tableamapi.c
@@ -20,6 +20,7 @@
 #include "commands/defrem.h"
 #include "miscadmin.h"
 #include "utils/fmgroids.h"
+#include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 
@@ -82,7 +83,7 @@ GetTableAmRoutine(Oid amhandler)
 	Assert(routine->tuple_update != NULL);
 	Assert(routine->tuple_lock != NULL);
 
-	Assert(routine->relation_set_new_filenode != NULL);
+	Assert(routine->relation_set_new_filelocator != NULL);
 	Assert(routine->relation_nontransactional_truncate != NULL);
 	Assert(routine->relation_copy_data != NULL);
 	Assert(routine->relation_copy_for_cluster != NULL);
@@ -104,6 +105,8 @@ GetTableAmRoutine(Oid amhandler)
 		   (routine->scan_bitmap_next_tuple == NULL));
 	Assert(routine->scan_sample_next_block != NULL);
 	Assert(routine->scan_sample_next_tuple != NULL);
+	/* dml_init and dml_fini should both set or ignored */
+	Assert((routine->dml_init != NULL) == (routine->dml_fini != NULL));
 
 	return routine;
 }

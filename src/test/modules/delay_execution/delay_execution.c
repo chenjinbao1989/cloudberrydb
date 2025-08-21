@@ -10,7 +10,7 @@
  * test behaviors where some specified action happens in another backend
  * between parsing and execution of any desired query.
  *
- * Copyright (c) 2020-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2020-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/test/modules/delay_execution/delay_execution.c
@@ -36,25 +36,21 @@ static int	post_planning_lock_id = 0;
 /* Save previous planner hook user to be a good citizen */
 static planner_hook_type prev_planner_hook = NULL;
 
-/* Module load/unload functions */
-void		_PG_init(void);
-void		_PG_fini(void);
-
 
 /* planner_hook function to provide the desired delay */
 static PlannedStmt *
 delay_execution_planner(Query *parse, const char *query_string,
-						int cursorOptions, ParamListInfo boundParams)
+						int cursorOptions, ParamListInfo boundParams, OptimizerOptions *optimizer_options)
 {
 	PlannedStmt *result;
 
 	/* Invoke the planner, possibly via a previous hook user */
 	if (prev_planner_hook)
 		result = prev_planner_hook(parse, query_string, cursorOptions,
-								   boundParams);
+								   boundParams, optimizer_options);
 	else
 		result = standard_planner(parse, query_string, cursorOptions,
-								  boundParams);
+								  boundParams, optimizer_options);
 
 	/* If enabled, delay by taking and releasing the specified lock */
 	if (post_planning_lock_id != 0)
@@ -91,14 +87,9 @@ _PG_init(void)
 							NULL,
 							NULL);
 
+	MarkGUCPrefixReserved("delay_execution");
+
 	/* Install our hook */
 	prev_planner_hook = planner_hook;
 	planner_hook = delay_execution_planner;
-}
-
-/* Module unload function (pro forma, not used currently) */
-void
-_PG_fini(void)
-{
-	planner_hook = prev_planner_hook;
 }

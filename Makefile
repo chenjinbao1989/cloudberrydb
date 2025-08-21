@@ -3,13 +3,11 @@
 # to build Postgres with a different make, we have this make file
 # that, as a service, will look for a GNU make and invoke it, or show
 # an error message if none could be found.
-
 # If the user were using GNU make now, this file would not get used
 # because GNU make uses a make file named "GNUmakefile" in preference
 # to "Makefile" if it exists. PostgreSQL is shipped with a
 # "GNUmakefile". If the user hasn't run the configure script yet, the
 # GNUmakefile won't exist yet, so we catch that case as well.
-
 
 # AIX make defaults to building *every* target of the first rule.  Start with
 # a single-target, empty rule to make the other targets non-default.
@@ -17,8 +15,14 @@ all:
 
 all check install installdirs installcheck installcheck-parallel uninstall clean distclean maintainer-clean dist distcheck world check-world install-world installcheck-world installcheck-resgroup installcheck-resgroup-v2:
 	@if [ ! -f GNUmakefile ] ; then \
+	   if [ -f INSTALL ] ; then \
+	     INSTRUCTIONS="INSTALL"; \
+	   else \
+	     INSTRUCTIONS="README.git"; \
+	   fi; \
 	   echo "You need to run the 'configure' program first. See the file"; \
-	   echo "'INSTALL' for installation instructions." ; \
+	   echo "'$$INSTRUCTIONS' for installation instructions, or visit: " ; \
+	   echo "<https://www.postgresql.org/docs/devel/installation.html>" ; \
 	   false ; \
 	 fi
 	@IFS=':' ; \

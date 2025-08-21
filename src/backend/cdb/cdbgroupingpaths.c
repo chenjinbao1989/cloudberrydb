@@ -67,6 +67,7 @@
 #include "optimizer/tlist.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_oper.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
@@ -87,6 +88,8 @@ typedef struct
 {
 	/* From the Query */
 	bool		hasAggs;
+	bool		hasDistinctOn;
+	List	   *parseGroupClause;	/* a list of SortGroupClause's */
 	List	   *groupClause;	/* a list of SortGroupClause's */
 	List	   *groupingSets;	/* a list of GroupingSet's if present */
 	List	   *group_tles;
@@ -142,6 +145,9 @@ typedef struct
 	 * partial_rel holds the partially aggregated results from the first stage.
 	 */
 	RelOptInfo *partial_rel;
+
+	/* is a DISTINCT?*/
+	bool		is_distinct;
 } cdb_agg_planning_context;
 
 typedef struct
@@ -226,6 +232,11 @@ recognize_dqa_type(cdb_agg_planning_context *ctx);
 static PathTarget *
 strip_aggdistinct(PathTarget *target);
 
+static void add_first_stage_group_agg_partial_path(PlannerInfo *root,
+										   Path *path,
+										   bool is_sorted,
+										   cdb_agg_planning_context *ctx);
+
 /*
  * cdb_create_multistage_grouping_paths
  *
@@ -300,6 +311,7 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 	 * across subroutines.
 	 */
 	memset(&ctx, 0, sizeof(ctx));
+	ctx.is_distinct = false;
 	ctx.can_sort = can_sort;
 	ctx.can_hash = can_hash;
 	ctx.target = target;
@@ -312,7 +324,9 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 	ctx.strat = strat;
 
 	ctx.hasAggs = parse->hasAggs;
-	ctx.groupClause = parse->groupClause;
+	ctx.hasDistinctOn = parse->hasDistinctOn;
+	ctx.parseGroupClause = parse->groupClause;
+	ctx.groupClause = root->processed_groupClause;
 	ctx.groupingSets = parse->groupingSets;
 	ctx.havingQual = havingQual;
 	ctx.partial_rel = fetch_upper_rel(root, UPPERREL_CDB_FIRST_STAGE_GROUP_AGG, NULL);
@@ -414,7 +428,7 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 
 		gsetcl = create_gsetid_groupclause(ctx.gsetid_sortref);
 
-		ctx.final_groupClause = lappend(copyObject(parse->groupClause), gsetcl);
+		ctx.final_groupClause = lappend(copyObject(root->processed_groupClause), gsetcl);
 
 		ctx.partial_grouping_target = copyObject(partial_grouping_target);
 		if (!list_member(ctx.partial_grouping_target->exprs, gsetid))
@@ -430,15 +444,21 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 		 * GROUPINGSET_ID() column.
 		 */
 		ctx.final_needed_pathkeys = make_pathkeys_for_sortclauses(root, gcls, tlist);
+		ctx.final_sort_pathkeys = ctx.final_needed_pathkeys;
 	}
 	else
 	{
 		ctx.partial_grouping_target = partial_grouping_target;
-		ctx.final_groupClause = parse->groupClause;
-		ctx.final_needed_pathkeys = root->group_pathkeys;
+		ctx.final_groupClause = root->processed_groupClause;
+		if (list_length(root->group_pathkeys) > root->num_groupby_pathkeys)
+			ctx.final_needed_pathkeys = list_copy_head(root->group_pathkeys,
+													   root->num_groupby_pathkeys);
+		else
+			ctx.final_needed_pathkeys = root->group_pathkeys;    /* preserves order */
 		ctx.gsetid_sortref = 0;
+		ctx.final_sort_pathkeys = root->group_pathkeys;
+
 	}
-	ctx.final_sort_pathkeys = ctx.final_needed_pathkeys;
 	ctx.final_group_tles = get_common_group_tles(ctx.partial_grouping_target,
 												 ctx.final_groupClause,
 												 NIL);
@@ -514,9 +534,16 @@ cdb_create_multistage_grouping_paths(PlannerInfo *root,
 				foreach(lc, root->agginfos)
 				{
 					AggInfo    *agginfo = (AggInfo *) lfirst(lc);
-					Aggref	   *aggref = agginfo->representative_aggref;
-					if (aggref->aggdistinct != NIL)
-						aggref->aggfilter = NULL;
+					ListCell   *lc2;
+
+					foreach(lc2, agginfo->aggrefs)
+					{
+						Aggref	   *aggref = lfirst(lc2);
+
+						if (aggref->aggdistinct != NIL)
+							aggref->aggfilter = NULL;
+					}
+
 				}
 				add_multi_dqas_hash_agg_path(root,
 											 cheapest_path,
@@ -582,6 +609,7 @@ cdb_create_twostage_distinct_paths(PlannerInfo *root,
 	memset(&zero_agg_costs, 0, sizeof(zero_agg_costs));
 
 	memset(&ctx, 0, sizeof(ctx));
+	ctx.is_distinct = true;
 	ctx.can_sort = allow_sort;
 	ctx.can_hash = allow_hash;
 	ctx.target = target;
@@ -605,8 +633,10 @@ cdb_create_twostage_distinct_paths(PlannerInfo *root,
 	 * handled in the grouping stage.
 	 */
 	ctx.hasAggs = false;
+	ctx.hasDistinctOn = true;
 	ctx.groupingSets = NIL;
 	ctx.havingQual = NULL;
+	ctx.parseGroupClause = parse->distinctClause;
 	ctx.groupClause = parse->distinctClause;
 	ctx.group_tles = get_common_group_tles(target, parse->distinctClause, NIL);
 	ctx.final_groupClause = ctx.groupClause;
@@ -652,7 +682,7 @@ cdb_create_twostage_distinct_paths(PlannerInfo *root,
 	/*
 	 * All set, generate the two-stage paths.
 	 */
-	create_two_stage_paths(root, &ctx, input_rel, output_rel, NIL);
+	create_two_stage_paths(root, &ctx, input_rel, output_rel, input_rel->partial_pathlist);
 }
 
 /*
@@ -663,6 +693,7 @@ create_two_stage_paths(PlannerInfo *root, cdb_agg_planning_context *ctx,
 					   RelOptInfo *input_rel, RelOptInfo *output_rel, List *partial_pathlist)
 {
 	Path	   *cheapest_path = input_rel->cheapest_total_path;
+	Path       *cheapest_partial_path =  partial_pathlist ? (Path *) linitial(partial_pathlist) : NULL;
 
 	/*
 	 * Consider ways to do the first Aggregate stage.
@@ -700,6 +731,24 @@ create_two_stage_paths(PlannerInfo *root, cdb_agg_planning_context *ctx,
 			if (path == cheapest_path || is_sorted)
 				add_first_stage_group_agg_path(root, path, is_sorted, ctx);
 		}
+
+		if (ctx->is_distinct && partial_pathlist)
+		{
+			foreach(lc, partial_pathlist)
+			{
+				Path	   *path = (Path *) lfirst(lc);
+				bool		is_sorted;
+
+				if (cdbpathlocus_collocates_tlist(root, path->locus, ctx->group_tles))
+					continue;
+
+				is_sorted = pathkeys_contained_in(ctx->partial_needed_pathkeys,
+													path->pathkeys);
+
+			if (path == cheapest_partial_path|| is_sorted)
+				add_first_stage_group_agg_partial_path(root, path, is_sorted, ctx);
+			}
+		}
 	}
 
 	/*
@@ -721,14 +770,33 @@ create_two_stage_paths(PlannerInfo *root, cdb_agg_planning_context *ctx,
 
 	if (partial_pathlist)
 	{
-		ListCell   *lc;
+		ListCell *lc;
 
-		foreach(lc, partial_pathlist)
+		foreach (lc, partial_pathlist)
 		{
-			Path       *path = (Path *) lfirst(lc);
+			Path *path = (Path *)lfirst(lc);
 
 			if (cdbpathlocus_collocates_tlist(root, path->locus, ctx->group_tles))
 				continue;
+
+			if (ctx->is_distinct && ctx->can_hash)
+			{
+				double dNumGroups = estimate_num_groups_on_segment(ctx->dNumGroupsTotal,
+																	path->rows,
+																	path->locus);
+
+				path = (Path *) create_agg_path(root,
+											  ctx->partial_rel,
+											  path,
+											  ctx->partial_grouping_target,
+											  AGG_HASHED,
+											  ctx->hasAggs ? AGGSPLIT_INITIAL_SERIAL : AGGSPLIT_SIMPLE,
+											  parallel_query_use_streaming_hashagg, /* streaming */
+											  ctx->groupClause,
+											  NIL,
+											  ctx->agg_partial_costs,
+											  dNumGroups);
+			}
 			add_partial_path(ctx->partial_rel, path);
 		}
 	}
@@ -849,6 +917,7 @@ create_two_stage_paths(PlannerInfo *root, cdb_agg_planning_context *ctx,
 													  path->pathkeys);
 				else
 					is_sorted = false;
+
 				if (path == cheapest_first_stage_path || is_sorted)
 				{
 					add_second_stage_group_agg_path(root, path, is_sorted,
@@ -1033,14 +1102,14 @@ add_first_stage_group_agg_path(PlannerInfo *root,
 											  ctx->agg_partial_costs);
 		add_path(ctx->partial_rel, first_stage_agg_path, root);
 	}
-	else if (ctx->hasAggs || ctx->groupClause)
+	else if (ctx->hasAggs || ctx->groupClause || ctx->hasDistinctOn)
 	{
 		add_path(ctx->partial_rel,
 			(Path *) create_agg_path(root,
 									 ctx->partial_rel,
 									 path,
 									 ctx->partial_grouping_target,
-									 ctx->groupClause ? AGG_SORTED : AGG_PLAIN,
+									 ctx->parseGroupClause ? AGG_SORTED : AGG_PLAIN,
 									 ctx->hasAggs ? AGGSPLIT_INITIAL_SERIAL : AGGSPLIT_SIMPLE,
 									 false, /* streaming */
 									 ctx->groupClause,
@@ -1214,7 +1283,7 @@ add_first_stage_hash_agg_path(PlannerInfo *root,
 										  ctx->partial_grouping_target,
 										  AGG_HASHED,
 										  ctx->hasAggs ? AGGSPLIT_INITIAL_SERIAL : AGGSPLIT_SIMPLE,
-										  false, /* streaming */
+										  gp_use_streaming_hashagg, /* streaming */
 										  ctx->groupClause,
 										  NIL,
 										  ctx->agg_partial_costs,
@@ -1249,6 +1318,7 @@ add_second_stage_hash_agg_path(PlannerInfo *root,
 	/*
 	 * Calculate the number of groups in the second stage, per segment.
 	 */
+	// consider parallel?
 	if (CdbPathLocus_IsPartitioned(group_locus))
 		dNumGroups = clamp_row_est(ctx->dNumGroupsTotal /
 								   CdbPathLocus_NumSegments(group_locus));
@@ -2552,7 +2622,9 @@ cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 {
 	CdbPathLocus locus;
 	bool		need_redistribute;
-	bool 		use_incremental_sort =  (presorted_keys != 0 && enable_incremental_sort);
+	bool 		use_incremental_sort =  (presorted_keys != 0 &&
+										 presorted_keys < list_length(group_pathkeys) &&
+										 enable_incremental_sort);
 
 	/*
 	 * If the input is already collected to a single segment, just add a Sort
@@ -2600,7 +2672,7 @@ cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 		return subpath;
 	}
 
-	if (is_sorted && group_pathkeys)
+	if (is_sorted && group_pathkeys && (subpath->locus.parallel_workers <= 1))
 	{
 		/*
 		 * The input is already conveniently sorted. We could redistribute
@@ -2614,7 +2686,8 @@ cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 											 group_pathkeys,
 											 false, locus);
 	}
-	else if (!is_sorted && group_pathkeys)
+	else if ((is_sorted && group_pathkeys && (subpath->locus.parallel_workers > 1)) ||
+		(!is_sorted && group_pathkeys))
 	{
 		/*
 		 * If we need to redistribute, it's usually best to redistribute
@@ -2719,4 +2792,39 @@ cdb_prepare_path_for_hashed_agg(PlannerInfo *root,
 											 locus);
 
 	return subpath;
+}
+
+static void add_first_stage_group_agg_partial_path(PlannerInfo *root,
+										   Path *path,
+										   bool is_sorted,
+										   cdb_agg_planning_context *ctx)
+{
+
+	if (ctx->agg_costs->distinctAggrefs ||
+		ctx->groupingSets)
+		return;
+
+	if (!is_sorted)
+	{
+		path = (Path *) create_sort_path(root,
+										 ctx->partial_rel,
+										 path,
+										 ctx->partial_sort_pathkeys,
+										 -1.0);
+	}
+
+	Assert(ctx->hasAggs || ctx->groupClause);
+	add_partial_path(ctx->partial_rel,
+		(Path *) create_agg_path(root,
+								 ctx->partial_rel,
+								 path,
+								 ctx->partial_grouping_target,
+								 ctx->groupClause ? AGG_SORTED : AGG_PLAIN,
+								 ctx->hasAggs ? AGGSPLIT_INITIAL_SERIAL : AGGSPLIT_SIMPLE,
+								 false, /* streaming */
+								 ctx->groupClause,
+								 NIL,
+								 ctx->agg_partial_costs,
+								 estimate_num_groups_on_segment(ctx->dNumGroupsTotal,
+																path->rows, path->locus)));
 }

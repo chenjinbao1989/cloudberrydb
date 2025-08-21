@@ -1,3 +1,8 @@
+-- start_matchignore
+-- m/^INFO:  GPORCA failed to produce a plan/
+-- m/^DETAIL:  Falling back to Postgres-based planner/
+-- m/^DETAIL:  DXL-to-PlStmt Translation/
+-- end_matchignore
 --
 -- PostgreSQL port of the MySQL "World" database.
 --
@@ -20,6 +25,8 @@ DROP TABLE IF EXISTS country cascade;
 DROP TABLE IF EXISTS countrylanguage cascade;
 
 --end_ignore
+
+SET optimizer_trace_fallback=on;
 
 BEGIN;
 
@@ -10329,7 +10336,7 @@ WHERE  e.deptno = dc1.deptno AND
        m.deptno = dmc1.dept_mgr_no
 ORDER BY 1, 2, 3, 4 DESC LIMIT 25;
 
--- Test that SharedInputScan within the same slice is always executed 
+-- Test that ShareInputScan within the same slice is always executed 
 set gp_cte_sharing=on;
 
 -- start_ignore
@@ -10344,6 +10351,12 @@ SELECT * FROM c as c1, zoo WHERE zoo.c != 4 AND c1.b = zoo.c
 UNION ALL
 SELECT * FROM c as c1, zoo WHERE zoo.c = c1.b;
 
+-- Test that nested CTE generates a valid plan
+EXPLAIN (COSTS OFF) WITH q AS (SELECT * FROM (WITH cte AS (SELECT * FROM car) SELECT * FROM car WHERE a > 7) t) SELECT * FROM q;
+WITH q AS (SELECT * FROM (WITH cte AS (SELECT * FROM car) SELECT * FROM car WHERE a > 7) t) SELECT * FROM q;
+
 -- start_ignore
 drop schema qp_with_clause cascade;
 -- end_ignore
+
+RESET optimizer_trace_fallback;

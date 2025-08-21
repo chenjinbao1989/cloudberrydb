@@ -35,11 +35,15 @@ _check_database_version(ArchiveHandle *AH)
 	const char *remoteversion_str;
 	int			remoteversion;
 	PGresult   *res;
+	char	   *version;
+	char		dbstring[1024];
+	char		dbstring2[1024];
+	int			v1;
 
 	remoteversion_str = PQparameterStatus(AH->connection, "server_version");
 	remoteversion = PQserverVersion(AH->connection);
 	if (remoteversion == 0 || !remoteversion_str)
-		fatal("could not get server_version from libpq");
+		pg_fatal("could not get server_version from libpq");
 
 	AH->public.remoteVersionStr = pg_strdup(remoteversion_str);
 	AH->public.remoteVersion = remoteversion;
@@ -50,24 +54,42 @@ _check_database_version(ArchiveHandle *AH)
 		&& (remoteversion < AH->public.minRemoteVersion ||
 			remoteversion > AH->public.maxRemoteVersion))
 	{
-		pg_log_error("server version: %s; %s version: %s",
-					 remoteversion_str, progname, PG_VERSION);
-		fatal("aborting because of server version mismatch");
+		pg_log_error("aborting because of server version mismatch");
+		pg_log_error_detail("server version: %s; %s version: %s",
+							remoteversion_str, progname, PG_VERSION);
+		exit(1);
 	}
 
 	/*
-	 * When running against 9.0 or later, check if we are in recovery mode,
-	 * which means we are on a hot standby.
+	 * Check if server is in recovery mode, which means we are on a hot
+	 * standby.
 	 */
-	if (remoteversion >= 90000)
-	{
-		res = ExecuteSqlQueryForSingleRow((Archive *) AH, "SELECT pg_catalog.pg_is_in_recovery()");
+	res = ExecuteSqlQueryForSingleRow((Archive *) AH,
+									  "SELECT pg_catalog.pg_is_in_recovery()");
+	AH->public.isStandby = (strcmp(PQgetvalue(res, 0, 0), "t") == 0);
 
-		AH->public.isStandby = (strcmp(PQgetvalue(res, 0, 0), "t") == 0);
-		PQclear(res);
+	res = ExecuteSqlQueryForSingleRow((Archive *) AH, "SELECT version()");
+
+	version = PQgetvalue(res, 0, 0);
+
+	if(sscanf(version, "%*[^(](%s %s %d.%*d.%*d-%*[^)])", dbstring, dbstring2, &v1) != 3)
+		pg_log_error("could not get version output from select version();\n");
+
+	if (strcasecmp("Greenplum", dbstring) == 0 && strcasecmp("Database", dbstring2) == 0)
+	{
+		AH->public.version.type = Greenplum;
+		AH->public.version.version = v1;
+
+	} else if((strcasecmp("Cloudberry", dbstring) == 0 && strcasecmp("Database", dbstring2) == 0)
+				|| (strcasecmp("Apache", dbstring) == 0 && strcasecmp("Cloudberry", dbstring2) == 0))
+	{
+		AH->public.version.type = Cloudberry;
+		AH->public.version.version = v1;
 	}
 	else
-		AH->public.isStandby = false;
+		pg_log_error("could not upgrade from non Greenplum/Cloudberry version: %s %s\n", dbstring, dbstring2);
+
+	PQclear(res);
 }
 
 /*
@@ -122,7 +144,7 @@ ConnectDatabase(Archive *AHX,
 	bool		new_pass;
 
 	if (AH->connection)
-		fatal("already connected to a database");
+		pg_fatal("already connected to a database");
 
 	/* Never prompt for a password during a reconnection */
 	prompt_password = isReconnect ? TRI_NO : cparams->promptPassword;
@@ -182,7 +204,7 @@ ConnectDatabase(Archive *AHX,
 		AH->connection = PQconnectdbParams(keywords, values, true);
 
 		if (!AH->connection)
-			fatal("could not connect to database");
+			pg_fatal("could not connect to database");
 
 		if (PQstatus(AH->connection) == CONNECTION_BAD &&
 			PQconnectionNeedsPassword(AH->connection) &&
@@ -199,11 +221,11 @@ ConnectDatabase(Archive *AHX,
 	if (PQstatus(AH->connection) == CONNECTION_BAD)
 	{
 		if (isReconnect)
-			fatal("reconnection failed: %s",
-				  PQerrorMessage(AH->connection));
+			pg_fatal("reconnection failed: %s",
+					 PQerrorMessage(AH->connection));
 		else
-			fatal("%s",
-				  PQerrorMessage(AH->connection));
+			pg_fatal("%s",
+					 PQerrorMessage(AH->connection));
 	}
 
 	/* Start strict; later phases may override this. */
@@ -219,8 +241,7 @@ ConnectDatabase(Archive *AHX,
 	 */
 	if (PQconnectionUsedPassword(AH->connection))
 	{
-		if (AH->savedPassword)
-			free(AH->savedPassword);
+		free(AH->savedPassword);
 		AH->savedPassword = pg_strdup(PQpass(AH->connection));
 	}
 
@@ -251,7 +272,7 @@ DisconnectDatabase(Archive *AHX)
 		/*
 		 * If we have an active query, send a cancel before closing, ignoring
 		 * any errors.  This is of no use for a normal exit, but might be
-		 * helpful during fatal().
+		 * helpful during pg_fatal().
 		 */
 		if (PQtransactionStatus(AH->connection) == PQTRANS_ACTIVE)
 			(void) PQcancel(AH->connCancel, errbuf, sizeof(errbuf));
@@ -277,16 +298,17 @@ GetConnection(Archive *AHX)
 static void
 notice_processor(void *arg pg_attribute_unused(), const char *message)
 {
-	pg_log_generic(PG_LOG_INFO, "%s", message);
+	pg_log_info("%s", message);
 }
 
-/* Like fatal(), but with a complaint about a particular query. */
+/* Like pg_fatal(), but with a complaint about a particular query. */
 static void
 die_on_query_failure(ArchiveHandle *AH, const char *query)
 {
 	pg_log_error("query failed: %s",
 				 PQerrorMessage(AH->connection));
-	fatal("query was: %s", query);
+	pg_log_error_detail("Query was: %s", query);
+	exit(1);
 }
 
 void
@@ -327,10 +349,10 @@ ExecuteSqlQueryForSingleRow(Archive *fout, const char *query)
 	/* Expecting a single result only */
 	ntups = PQntuples(res);
 	if (ntups != 1)
-		fatal(ngettext("query returned %d row instead of one: %s",
-					   "query returned %d rows instead of one: %s",
-					   ntups),
-			  ntups, query);
+		pg_fatal(ngettext("query returned %d row instead of one: %s",
+						  "query returned %d rows instead of one: %s",
+						  ntups),
+				 ntups, query);
 
 	return res;
 }
@@ -472,8 +494,8 @@ ExecuteSqlCommandBuf(Archive *AHX, const char *buf, size_t bufLen)
 		 */
 		if (AH->pgCopyIn &&
 			PQputCopyData(AH->connection, buf, bufLen) <= 0)
-			fatal("error returned by PQputCopyData: %s",
-				  PQerrorMessage(AH->connection));
+			pg_fatal("error returned by PQputCopyData: %s",
+					 PQerrorMessage(AH->connection));
 	}
 	else if (AH->outputKind == OUTPUT_OTHERDATA)
 	{
@@ -521,8 +543,8 @@ EndDBCopyMode(Archive *AHX, const char *tocEntryTag)
 		PGresult   *res;
 
 		if (PQputCopyEnd(AH->connection, NULL) <= 0)
-			fatal("error returned by PQputCopyEnd: %s",
-				  PQerrorMessage(AH->connection));
+			pg_fatal("error returned by PQputCopyEnd: %s",
+					 PQerrorMessage(AH->connection));
 
 		/* Check command status and return to normal libpq state */
 		res = PQgetResult(AH->connection);
@@ -557,11 +579,11 @@ CommitTransaction(Archive *AHX)
 }
 
 void
-DropBlobIfExists(ArchiveHandle *AH, Oid oid)
+DropLOIfExists(ArchiveHandle *AH, Oid oid)
 {
 	/*
 	 * If we are not restoring to a direct database connection, we have to
-	 * guess about how to detect whether the blob exists.  Assume new-style.
+	 * guess about how to detect whether the LO exists.  Assume new-style.
 	 */
 	if (AH->connection == NULL ||
 		PQserverVersion(AH->connection) >= 90000)

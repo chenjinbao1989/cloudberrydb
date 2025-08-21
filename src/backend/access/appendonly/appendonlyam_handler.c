@@ -46,6 +46,7 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_rusage.h"
 #include "utils/guc.h"
+#include "utils/sampling.h"
 
 #define IS_BTREE(r) ((r)->rd_rel->relam == BTREE_AM_OID)
 
@@ -227,7 +228,7 @@ remove_dml_state(const Oid relationOid)
  *
  * This function should be called exactly once per relation.
  */
-void
+static void
 appendonly_dml_init(Relation relation, CmdType operation)
 {
 	init_appendonly_dml_states();
@@ -237,7 +238,7 @@ appendonly_dml_init(Relation relation, CmdType operation)
 /*
  * This function should be called exactly once per relation.
  */
-void
+static void
 appendonly_dml_finish(Relation relation, CmdType operation)
 {
 	AppendOnlyDMLState *state;
@@ -1076,7 +1077,7 @@ static TM_Result
 appendonly_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 					CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 					bool wait, TM_FailureData *tmfd,
-					LockTupleMode *lockmode, bool *update_indexes)
+					LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
 	AppendOnlyInsertDesc	insertDesc;
 	AppendOnlyDeleteDesc	deleteDesc;
@@ -1107,9 +1108,9 @@ appendonly_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slo
 
 	appendonly_insert(insertDesc, mtuple, (AOTupleId *) &slot->tts_tid);
 
-	pgstat_count_heap_update(relation, false);
+	pgstat_count_heap_update(relation, false, false);
 	/* No HOT updates with AO tables. */
-	*update_indexes = true;
+	*update_indexes = TU_All;
 
 	appendonly_free_memtuple(mtuple);
 
@@ -1175,7 +1176,7 @@ heap_truncate_one_relid(Oid relid)
  */
 static void
 appendonly_relation_set_new_filenode(Relation rel,
-									 const RelFileNode *newrnode,
+									 const RelFileLocator *newrnode,
 									 char persistence,
 									 TransactionId *freezeXid,
 									 MultiXactId *minmulti)
@@ -1195,7 +1196,7 @@ appendonly_relation_set_new_filenode(Relation rel,
 	 *
 	 * Segment files will be created when / if needed.
 	 */
-	srel = RelationCreateStorage(*newrnode, persistence, SMGR_AO, rel);
+	srel = RelationCreateStorage(*newrnode, persistence, true, SMGR_AO, rel);
 
 	/*
 	 * If required, set up an init fork for an unlogged table so that it can
@@ -1241,7 +1242,7 @@ appendonly_relation_nontransactional_truncate(Relation rel)
 }
 
 static void
-appendonly_relation_copy_data(Relation rel, const RelFileNode *newrnode)
+appendonly_relation_copy_data(Relation rel, const RelFileLocator *newrnode)
 {
 	SMgrRelation dstrel;
 
@@ -1250,7 +1251,6 @@ appendonly_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	 * implementation
 	 */
 	dstrel = smgropen(*newrnode, rel->rd_backend, SMGR_AO, rel);
-	RelationOpenSmgr(rel);
 
 	/*
 	 * Create and copy all forks of the relation, and schedule unlinking of
@@ -1259,9 +1259,10 @@ appendonly_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	 * NOTE: any conflict in relfilenode value will be caught in
 	 * RelationCreateStorage().
 	 */
-	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence, SMGR_AO, rel);
+	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence, SMGR_AO, true, rel);
 
-	copy_append_only_data(rel->rd_node, *newrnode, rel->rd_smgr, dstrel, rel->rd_backend, rel->rd_rel->relpersistence);
+	copy_append_only_data(rel->rd_locator, *newrnode, RelationGetSmgr(rel), dstrel,
+						  rel->rd_backend, rel->rd_rel->relpersistence);
 
 	/*
 	 * For append-optimized tables, no forks other than the main fork should
@@ -1492,10 +1493,13 @@ static bool
 appendonly_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
 							   BufferAccessStrategy bstrategy)
 {
-	AppendOnlyScanDesc aoscan = (AppendOnlyScanDesc) scan;
-	aoscan->targetTupleId = blockno;
-
-	return true;
+	/*
+	 * For append-optimized relations, we use a separate sampling
+	 * method. See table_relation_acquire_sample_rows().
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_INTERNAL_ERROR),
+			 errmsg("API not supported for appendoptimized relations")));
 }
 
 static bool
@@ -1503,30 +1507,91 @@ appendonly_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 							   double *liverows, double *deadrows,
 							   TupleTableSlot *slot)
 {
+	/*
+	 * For append-optimized relations, we use a separate sampling
+	 * method. See table_relation_acquire_sample_rows().
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_INTERNAL_ERROR),
+			 errmsg("API not supported for appendoptimized relations")));
+}
+
+/*
+ * Implementation of relation_acquire_sample_rows().
+ *
+ * As opposed to upstream's method of 2-stage sampling, here we can simply use
+ * Knuth's S algorithm (TAOCP Part 2 Section 3.4.2) as we clearly know N - the
+ * population size up front (i.e the total number of rows in the relation)
+ *
+ * Although an estimate is demanded for the total live rows and total dead rows
+ * in the table, we can actually return their exact values from aux table metadata.
+ *
+ * We intrinsically return rows in physical order, since the rows sampled by
+ * Algorithm S are in physical order.
+ */
+static int
+appendonly_acquire_sample_rows(Relation onerel, int elevel, HeapTuple *rows,
+							   int targrows, double *totalrows, double *totaldeadrows)
+{
+	int		numrows = 0;	/* # number of rows sampled */
+	double	liverows = 0;	/* # live rows seen */
+	double	deadrows = 0;	/* # dead rows seen */
+
+	Assert(targrows > 0);
+
+	TableScanDesc scan = table_beginscan_analyze(onerel);
+	TupleTableSlot *slot = table_slot_create(onerel, NULL);
 	AppendOnlyScanDesc aoscan = (AppendOnlyScanDesc) scan;
-	bool		ret = false;
 
-	/* skip several tuples if they are not sampling target */
-	while (!aoscan->aos_done_all_segfiles
-		   && aoscan->targetTupleId > aoscan->nextTupleId)
+	int64 totaltupcount = AppendOnlyScanDesc_TotalTupCount(aoscan);
+	int64 totaldeadtupcount = 0;
+	if (aoscan->aos_total_segfiles > 0 )
+		totaldeadtupcount = AppendOnlyVisimap_GetRelationHiddenTupleCount(&aoscan->visibilityMap);
+	/*
+     * The conversion from int64 to double (53 significant bits) is safe as the
+	 * AOTupleId is 48bits, the max value of totalrows is never greater than
+	 * AOTupleId_MaxSegmentFileNum * AOTupleId_MaxRowNum (< 48 significant bits).
+	 */
+	*totalrows = (double) (totaltupcount - totaldeadtupcount);
+	*totaldeadrows = (double) totaldeadtupcount;
+
+	/* Prepare for sampling row numbers */
+	RowSamplerData rs;
+	RowSampler_Init(&rs, *totalrows, targrows, random());
+
+	while (RowSampler_HasMore(&rs))
 	{
-		appendonly_getnextslot(scan, ForwardScanDirection, slot);
-		aoscan->nextTupleId++;
-	}
+		aoscan->targrow = RowSampler_Next(&rs);
 
-	if (!aoscan->aos_done_all_segfiles
-		&& aoscan->targetTupleId == aoscan->nextTupleId)
-	{
-		ret = appendonly_getnextslot(scan, ForwardScanDirection, slot);
-		aoscan->nextTupleId++;
+		vacuum_delay_point();
 
-		if (ret)
-			*liverows += 1;
+		if (appendonly_get_target_tuple(aoscan, aoscan->targrow, slot))
+		{
+			rows[numrows++] = ExecCopySlotHeapTuple(slot);
+			liverows++;
+		}
 		else
-			*deadrows += 1; /* if return an invisible tuple */
+			deadrows++;
+
+		ExecClearTuple(slot);
 	}
 
-	return ret;
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+
+	/*
+	 * Emit some interesting relation info
+	 */
+	ereport(elevel,
+			(errmsg("\"%s\": scanned " INT64_FORMAT " rows, "
+					"containing %.0f live rows and %.0f dead rows; "
+					"%d rows in sample, %.0f total live rows, "
+					"%.f total dead rows",
+					RelationGetRelationName(onerel),
+					rs.m, liverows, deadrows, numrows,
+					*totalrows, *totaldeadrows)));
+
+	return numrows;
 }
 
 static double
@@ -2271,13 +2336,14 @@ static const TableAmRoutine ao_row_methods = {
 	.tuple_satisfies_snapshot = appendonly_tuple_satisfies_snapshot,
 	.index_delete_tuples = appendonly_index_delete_tuples,
 
-	.relation_set_new_filenode = appendonly_relation_set_new_filenode,
+	.relation_set_new_filelocator = appendonly_relation_set_new_filenode,
 	.relation_nontransactional_truncate = appendonly_relation_nontransactional_truncate,
 	.relation_copy_data = appendonly_relation_copy_data,
 	.relation_copy_for_cluster = appendonly_relation_copy_for_cluster,
 	.relation_vacuum = appendonly_vacuum_rel,
 	.scan_analyze_next_block = appendonly_scan_analyze_next_block,
 	.scan_analyze_next_tuple = appendonly_scan_analyze_next_tuple,
+	.relation_acquire_sample_rows = appendonly_acquire_sample_rows,
 	.index_build_range_scan = appendonly_index_build_range_scan,
 	.index_validate_scan = appendonly_index_validate_scan,
 
@@ -2293,8 +2359,9 @@ static const TableAmRoutine ao_row_methods = {
 	.scan_bitmap_next_tuple = appendonly_scan_bitmap_next_tuple,
 	.scan_sample_next_block = appendonly_scan_sample_next_block,
 	.scan_sample_next_tuple = appendonly_scan_sample_next_tuple,
-	.acquire_sample_rows = acquire_sample_rows,
 
+	.dml_init = appendonly_dml_init,
+	.dml_fini = appendonly_dml_finish,
 	.amoptions = ao_amoptions,
 	.swap_relation_files = appendonly_swap_relation_files,
 };

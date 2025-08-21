@@ -264,7 +264,7 @@ TM_Result CCPaxAccessMethod::TupleUpdate(Relation relation, ItemPointer otid,
                                          Snapshot snapshot, Snapshot crosscheck,
                                          bool wait, TM_FailureData *tmfd,
                                          LockTupleMode *lockmode,
-                                         bool *update_indexes) {
+										 TU_UpdateIndexes *update_indexes) {
   CBDB_TRY();
   {
     MemoryContext old_ctx;
@@ -276,7 +276,7 @@ TM_Result CCPaxAccessMethod::TupleUpdate(Relation relation, ItemPointer otid,
                                       crosscheck, wait, tmfd, lockmode,
                                       update_indexes);
     MemoryContextSwitchTo(old_ctx);
-    if (result == TM_Ok) pgstat_count_heap_update(relation, false);
+    if (result == TM_Ok) pgstat_count_heap_update(relation, false, false);
     return result;
   }
   CBDB_CATCH_DEFAULT();
@@ -412,8 +412,6 @@ void CCPaxAccessMethod::FinishBulkInsert(Relation relation, int options) {
 }
 
 void CCPaxAccessMethod::ExtDmlInit(Relation rel, CmdType operation) {
-  if (!RELATION_IS_PAX(rel)) return;
-
   CBDB_TRY();
   { pax::CPaxDmlStateLocal::Instance()->InitDmlState(rel, operation); }
   CBDB_CATCH_DEFAULT();
@@ -422,8 +420,6 @@ void CCPaxAccessMethod::ExtDmlInit(Relation rel, CmdType operation) {
 }
 
 void CCPaxAccessMethod::ExtDmlFini(Relation rel, CmdType operation) {
-  if (!RELATION_IS_PAX(rel)) return;
-
   CBDB_TRY();
   { pax::CPaxDmlStateLocal::Instance()->FinishDmlState(rel, operation); }
   CBDB_CATCH_DEFAULT();
@@ -453,6 +449,7 @@ uint32 PaxAccessMethod::ScanFlags(Relation relation) {
   flags |= SCAN_FORCE_BIG_WRITE_LOCK;
 #endif
 
+  flags |= SCAN_SUPPORT_RUNTIME_FILTER;
   return flags;
 }
 
@@ -765,7 +762,7 @@ static const TableAmRoutine kPaxColumnMethods = {
     .tuple_lock = paxc::PaxAccessMethod::TupleLock,
     .finish_bulk_insert = pax::CCPaxAccessMethod::FinishBulkInsert,
 
-    .relation_set_new_filenode = pax::CCPaxAccessMethod::RelationSetNewFilenode,
+    .relation_set_new_filelocator = pax::CCPaxAccessMethod::RelationSetNewFilenode,
     .relation_nontransactional_truncate =
         pax::CCPaxAccessMethod::RelationNontransactionalTruncate,
     .relation_copy_data = pax::CCPaxAccessMethod::RelationCopyData,
@@ -790,6 +787,8 @@ static const TableAmRoutine kPaxColumnMethods = {
     .scan_sample_next_block = pax::CCPaxAccessMethod::ScanSampleNextBlock,
     .scan_sample_next_tuple = pax::CCPaxAccessMethod::ScanSampleNextTuple,
 
+    .dml_init = pax::CCPaxAccessMethod::ExtDmlInit,
+    .dml_fini = pax::CCPaxAccessMethod::ExtDmlFini,
     .amoptions = paxc::PaxAccessMethod::AmOptions,
     .swap_relation_files = paxc::PaxAccessMethod::SwapRelationFiles,
     .validate_column_encoding_clauses =
@@ -1189,9 +1188,6 @@ void _PG_init(void) {  // NOLINT
 
   prev_object_access_hook = object_access_hook;
   object_access_hook = PaxObjectAccessHook;
-
-  ext_dml_init_hook = pax::CCPaxAccessMethod::ExtDmlInit;
-  ext_dml_finish_hook = pax::CCPaxAccessMethod::ExtDmlFini;
 
   prev_ProcessUtilit_hook = ProcessUtility_hook;
   ProcessUtility_hook = paxProcessUtility;

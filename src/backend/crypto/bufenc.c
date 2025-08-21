@@ -36,6 +36,8 @@ static unsigned char buf_encryption_iv[BUFENC_IV_SIZE];
 
 void *BufEncCtx = NULL;
 void *BufDecCtx = NULL;
+static sm4_ctx sm4_enc_ctx;
+static sm4_ctx sm4_dec_ctx;
 
 static void set_buffer_encryption_iv(Page page, BlockNumber blkno);
 
@@ -47,16 +49,28 @@ InitializeBufferEncryption(void)
 	if (!FileEncryptionEnabled)
 		return;
 
+	/* 
+	 * To avoid memory leaks, when the postmaster resets the cluster, 
+	 * need to release the memory which was alloced at last time. 
+	 */
+	if (BufEncCtx && BufEncCtx != &sm4_enc_ctx)
+	{
+		pg_cipher_ctx_free(BufEncCtx);
+		BufEncCtx = NULL;
+	}
+	if (BufDecCtx && BufDecCtx != &sm4_dec_ctx)
+	{
+		pg_cipher_ctx_free(BufDecCtx);
+		BufDecCtx = NULL;
+	}
+	
 	key = KmgrGetKey(KMGR_KEY_ID_REL);
 
 	if (CheckIsSM4Method())
 	{
-		bool found;
-		BufEncCtx = ShmemInitStruct("sm4 encryption method encrypt ctx",
-												sizeof(sm4_ctx), &found);
+		BufEncCtx = &sm4_enc_ctx;
+		BufDecCtx = &sm4_dec_ctx;
 
-		BufDecCtx = ShmemInitStruct("sm4 encryption method decrypt ctx",
-												sizeof(sm4_ctx), &found);
 		sm4_ofb_setkey_enc((sm4_ctx *)BufEncCtx, (unsigned char *)key->key);
 		sm4_ofb_setkey_dec((sm4_ctx *)BufDecCtx, (unsigned char *)key->key);
 	}
@@ -171,15 +185,15 @@ set_buffer_encryption_iv(Page page, BlockNumber blkno)
 
 /* Construct iv for the given page */
 static void
-set_buffer_encryption_iv_for_ao(RelFileNode *file_node)
+set_buffer_encryption_iv_for_ao(RelFileLocator *file_node)
 {
 	unsigned char *p = buf_encryption_iv;
 
 	MemSet(buf_encryption_iv, 0, BUFENC_IV_SIZE);
 
 	/* copy the whole file node (4 bytes) */
-	memcpy(p, &file_node->dbNode, sizeof(file_node->dbNode));
-	p += sizeof(file_node->dbNode);
+	memcpy(p, &file_node->dbOid, sizeof(file_node->dbOid));
+	p += sizeof(file_node->dbOid);
 
 	/*
 	 * set the last remain 12 bytes
@@ -190,7 +204,7 @@ set_buffer_encryption_iv_for_ao(RelFileNode *file_node)
 
 void
 EncryptAOBLock(unsigned char *data_buf, const int buf_len,
-				  RelFileNode *file_node)
+				  RelFileLocator *file_node)
 {
 	int			enclen;
 	Assert(BufEncCtx != NULL);
@@ -224,7 +238,7 @@ EncryptAOBLock(unsigned char *data_buf, const int buf_len,
 /* Decrypt the given page with the relation key */
 void
 DecryptAOBlock(unsigned char *data_buf, const int buf_len,
-				  RelFileNode *file_node)
+			   RelFileLocator *file_node)
 {
 	int			enclen;
 	Assert(BufDecCtx != NULL);

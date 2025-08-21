@@ -11,7 +11,7 @@
  *
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -35,6 +35,7 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
+#include "utils/metrics_utils.h"
 #include "utils/snapmgr.h"
 
 #include "cdb/cdbendpoint.h"
@@ -52,12 +53,12 @@ void
 PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo params,
 				  bool isTopLevel)
 {
-	Query	   *query = castNode(Query, cstmt->query);
-	List	   *rewritten;
+	Query *query = castNode(Query, cstmt->query);
+	List *rewritten;
 	PlannedStmt *plan;
-	Portal		portal;
+	Portal portal;
 	MemoryContext oldContext;
-	char	   *queryString;
+	char *queryString;
 
 	/*
 	 * Disallow empty-string cursor name (conflicts with protocol-level
@@ -65,8 +66,8 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	 */
 	if (!cstmt->portalname || cstmt->portalname[0] == '\0')
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_CURSOR_NAME),
-				 errmsg("invalid cursor name: must not be empty")));
+			(errcode(ERRCODE_INVALID_CURSOR_NAME),
+				errmsg("invalid cursor name: must not be empty")));
 
 	/*
 	 * If this is a non-holdable cursor, we require that this statement has
@@ -77,8 +78,10 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 		RequireTransactionBlock(isTopLevel, "DECLARE CURSOR");
 	else if (InSecurityRestrictedOperation())
 		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("cannot create a cursor WITH HOLD within security-restricted operation")));
+			(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				errmsg(
+					"cannot create a cursor WITH HOLD within security-restricted operation"
+				)));
 
 	/*
 	 * Parse analysis was done already, but we still have to run the rule
@@ -107,7 +110,7 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	 * Allow using the SCROLL keyword even though we don't support its
 	 * functionality (backward scrolling). Silently accept it and instead
 	 * of reporting an error like before, override it to NO SCROLL.
-	 * 
+	 *
 	 * for information see: MPP-5305 and BIT-93
 	 */
 	if (cstmt->options & CURSOR_OPT_SCROLL)
@@ -120,8 +123,9 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	}
 
 	cstmt->options |= CURSOR_OPT_NO_SCROLL;
-	
-	Assert(!(cstmt->options & CURSOR_OPT_SCROLL && cstmt->options & CURSOR_OPT_NO_SCROLL));
+
+	Assert(
+		!(cstmt->options & CURSOR_OPT_SCROLL && cstmt->options & CURSOR_OPT_NO_SCROLL));
 
 	/*
 	 * Create a portal and copy the plan and queryString into its memory.
@@ -138,7 +142,7 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 					  NULL,
 					  queryString,
 					  T_DeclareCursorStmt,
-					  CMDTAG_SELECT,	/* cursor's query is always a SELECT */
+					  CMDTAG_SELECT, /* cursor's query is always a SELECT */
 					  list_make1(plan),
 					  NULL);
 
@@ -219,8 +223,8 @@ PerformPortalFetch(FetchStmt *stmt,
 				   DestReceiver *dest,
 				   QueryCompletion *qc)
 {
-	Portal		portal;
-	uint64		nprocessed;
+	Portal portal;
+	uint64 nprocessed;
 
 	/*
 	 * Disallow empty-string cursor name (conflicts with protocol-level
@@ -228,8 +232,8 @@ PerformPortalFetch(FetchStmt *stmt,
 	 */
 	if (!stmt->portalname || stmt->portalname[0] == '\0')
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_CURSOR_NAME),
-				 errmsg("invalid cursor name: must not be empty")));
+			(errcode(ERRCODE_INVALID_CURSOR_NAME),
+				errmsg("invalid cursor name: must not be empty")));
 
 	/* get the portal from the portal name */
 	portal = GetPortalByName(stmt->portalname);
@@ -237,8 +241,8 @@ PerformPortalFetch(FetchStmt *stmt,
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_CURSOR),
-				 errmsg("cursor \"%s\" does not exist", stmt->portalname)));
-		return;					/* keep compiler happy */
+					errmsg("cursor \"%s\" does not exist", stmt->portalname)));
+		return; /* keep compiler happy */
 	}
 
 	if (PortalIsParallelRetrieveCursor(portal))
@@ -247,14 +251,16 @@ PerformPortalFetch(FetchStmt *stmt,
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("the 'MOVE' statement for PARALLEL RETRIEVE CURSOR is not supported")));
+						errmsg(
+							"the 'MOVE' statement for PARALLEL RETRIEVE CURSOR is not supported"
+						)));
 		}
 		else
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("cannot specify 'FETCH' for PARALLEL RETRIEVE CURSOR"),
-					 errhint("Use 'RETRIEVE' statement on endpoint instead.")));
+						errmsg("cannot specify 'FETCH' for PARALLEL RETRIEVE CURSOR"),
+						errhint("Use 'RETRIEVE' statement on endpoint instead.")));
 		}
 	}
 
@@ -281,7 +287,7 @@ PerformPortalFetch(FetchStmt *stmt,
 void
 PerformPortalClose(const char *name)
 {
-	Portal		portal;
+	Portal portal;
 
 	/* NULL means CLOSE ALL */
 	if (name == NULL)
@@ -296,8 +302,8 @@ PerformPortalClose(const char *name)
 	 */
 	if (name[0] == '\0')
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_CURSOR_NAME),
-				 errmsg("invalid cursor name: must not be empty")));
+			(errcode(ERRCODE_INVALID_CURSOR_NAME),
+				errmsg("invalid cursor name: must not be empty")));
 
 	/*
 	 * get the portal from the portal name
@@ -307,8 +313,8 @@ PerformPortalClose(const char *name)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_CURSOR),
-				 errmsg("cursor \"%s\" does not exist", name)));
-		return;					/* keep compiler happy */
+					errmsg("cursor \"%s\" does not exist", name)));
+		return; /* keep compiler happy */
 	}
 
 	/*
@@ -330,13 +336,13 @@ PerformPortalClose(const char *name)
 void
 PortalCleanup(Portal portal)
 {
-	QueryDesc  *queryDesc;
+	QueryDesc *queryDesc;
 
 	/*
 	 * sanity checks
 	 */
-	AssertArg(PortalIsValid(portal));
-	AssertArg(portal->cleanup == PortalCleanup);
+	Assert(PortalIsValid(portal));
+	Assert(portal->cleanup == PortalCleanup);
 
 	/*
 	 * Shut down executor, if still running.  We skip this during error abort,
@@ -374,22 +380,36 @@ PortalCleanup(Portal portal)
 
 			CurrentResourceOwner = saveResourceOwner;
 		}
+		else
+		{
+			/* GPDB hook for collecting query info */
+			if (queryDesc->gpsc_query_key && query_info_collect_hook)
+			{
+				PG_TRY(); {
+						(*query_info_collect_hook)(METRICS_QUERY_ERROR, queryDesc);
+					}
+				PG_CATCH(); {
+						FlushErrorState();
+					}
+				PG_END_TRY();
+			}
+		}
 	}
 
-	/* 
-	 * If resource scheduling is enabled, release the resource lock. 
+	/*
+	 * If resource scheduling is enabled, release the resource lock.
 	 */
 	if (IsResQueueLockedForPortal(portal))
 	{
-        ResUnLockPortal(portal);
+		ResUnLockPortal(portal);
 	}
 
 	/**
 	 * Clean up backend's backoff entry
 	 */
 	if (gp_enable_resqueue_priority
-			&& Gp_role == GP_ROLE_DISPATCH
-			&& gp_session_id > -1)
+		&& Gp_role == GP_ROLE_DISPATCH
+		&& gp_session_id > -1)
 	{
 		BackoffBackendEntryExit();
 	}
@@ -406,8 +426,8 @@ PortalCleanup(Portal portal)
 void
 PersistHoldablePortal(Portal portal)
 {
-	QueryDesc  *queryDesc = portal->queryDesc;
-	Portal		saveActivePortal;
+	QueryDesc *queryDesc = portal->queryDesc;
+	Portal saveActivePortal;
 	ResourceOwner saveResourceOwner;
 	MemoryContext savePortalContext;
 	MemoryContext oldcxt;
@@ -447,142 +467,140 @@ PersistHoldablePortal(Portal portal)
 	saveActivePortal = ActivePortal;
 	saveResourceOwner = CurrentResourceOwner;
 	savePortalContext = PortalContext;
-	PG_TRY();
-	{
-		ScanDirection direction = ForwardScanDirection;
+	PG_TRY(); {
+			ScanDirection direction = ForwardScanDirection;
 
-		ActivePortal = portal;
-		if (portal->resowner)
-			CurrentResourceOwner = portal->resowner;
-		PortalContext = portal->portalContext;
+			ActivePortal = portal;
+			if (portal->resowner)
+				CurrentResourceOwner = portal->resowner;
+			PortalContext = portal->portalContext;
 
-		MemoryContextSwitchTo(PortalContext);
+			MemoryContextSwitchTo(PortalContext);
 
-		PushActiveSnapshot(queryDesc->snapshot);
+			PushActiveSnapshot(queryDesc->snapshot);
 
-		/*
-		 * If the portal is marked scrollable, we need to store the entire
-		 * result set in the tuplestore, so that subsequent backward FETCHs
-		 * can be processed.  Otherwise, store only the not-yet-fetched rows.
-		 * (The latter is not only more efficient, but avoids semantic
-		 * problems if the query's output isn't stable.)
-		 *
-		 * In the no-scroll case, tuple indexes in the tuplestore will not
-		 * match the cursor's nominal position (portalPos).  Currently this
-		 * causes no difficulty because we only navigate in the tuplestore by
-		 * relative position, except for the tuplestore_skiptuples call below
-		 * and the tuplestore_rescan call in DoPortalRewind, both of which are
-		 * disabled for no-scroll cursors.  But someday we might need to track
-		 * the offset between the holdStore and the cursor's nominal position
-		 * explicitly.
-		 */
-
-		if (portal->cursorOptions & CURSOR_OPT_SCROLL)
-		{
 			/*
-			 * We don't allow scanning backwards in MPP! skip this call and
-			 * skip the reset position call few lines down.
+			 * If the portal is marked scrollable, we need to store the entire
+			 * result set in the tuplestore, so that subsequent backward FETCHs
+			 * can be processed.  Otherwise, store only the not-yet-fetched rows.
+			 * (The latter is not only more efficient, but avoids semantic
+			 * problems if the query's output isn't stable.)
+			 *
+			 * In the no-scroll case, tuple indexes in the tuplestore will not
+			 * match the cursor's nominal position (portalPos).  Currently this
+			 * causes no difficulty because we only navigate in the tuplestore by
+			 * relative position, except for the tuplestore_skiptuples call below
+			 * and the tuplestore_rescan call in DoPortalRewind, both of which are
+			 * disabled for no-scroll cursors.  But someday we might need to track
+			 * the offset between the holdStore and the cursor's nominal position
+			 * explicitly.
 			 */
-			if (Gp_role == GP_ROLE_UTILITY)
-				ExecutorRewind(queryDesc);
-		}
-		else
-		{
-			/*
-			 * If we already reached end-of-query, set the direction to
-			 * NoMovement to avoid trying to fetch any tuples.  (This check
-			 * exists because not all plan node types are robust about being
-			 * called again if they've already returned NULL once.)  We'll
-			 * still set up an empty tuplestore, though, to keep this from
-			 * being a special case later.
-			 */
-			if (portal->atEnd)
-				direction = NoMovementScanDirection;
-		}
 
-		/*
-		 * Change the destination to output to the tuplestore.  Note we tell
-		 * the tuplestore receiver to detoast all data passed through it; this
-		 * makes it safe to not keep a snapshot associated with the data.
-		 */
-		queryDesc->dest = CreateDestReceiver(DestTuplestore);
-		SetTuplestoreDestReceiverParams(queryDesc->dest,
-										portal->holdStore,
-										portal->holdContext,
-										true,
-										NULL,
-										NULL);
-
-		/* Fetch the result set into the tuplestore */
-		ExecutorRun(queryDesc, direction, 0L, false);
-
-		queryDesc->dest->rDestroy(queryDesc->dest);
-		queryDesc->dest = NULL;
-
-		/*
-		 * Now shut down the inner executor.
-		 */
-		portal->queryDesc = NULL;	/* prevent double shutdown */
-		ExecutorFinish(queryDesc);
-		ExecutorEnd(queryDesc);
-		FreeQueryDesc(queryDesc);
-
-		/*
-		 * Set the position in the result set.
-		 */
-		MemoryContextSwitchTo(portal->holdContext);
-
-		/*
-		 * Since we don't allow backward scan in MPP we didn't do the 
-		 * ExecutorRewind() call few lines just above. Therefore we 
-		 * don't want to reset the position because we are already in
-		 * the position we need to be. Allow this only in utility mode.
-		 */
-		if (Gp_role == GP_ROLE_UTILITY)
-		{
-			if (portal->atEnd)
+			if (portal->cursorOptions & CURSOR_OPT_SCROLL)
 			{
 				/*
-				 * Just force the tuplestore forward to its end.  The size of the
-				 * skip request here is arbitrary.
+				 * We don't allow scanning backwards in MPP! skip this call and
+				 * skip the reset position call few lines down.
 				 */
-				while (tuplestore_skiptuples(portal->holdStore, 1000000, true))
-					/* continue */ ;
+				if (Gp_role == GP_ROLE_UTILITY)
+					ExecutorRewind(queryDesc);
 			}
 			else
 			{
-				tuplestore_rescan(portal->holdStore);
-
 				/*
-				 * In the no-scroll case, the start of the tuplestore is exactly
-				 * where we want to be, so no repositioning is wanted.
+				 * If we already reached end-of-query, set the direction to
+				 * NoMovement to avoid trying to fetch any tuples.  (This check
+				 * exists because not all plan node types are robust about being
+				 * called again if they've already returned NULL once.)  We'll
+				 * still set up an empty tuplestore, though, to keep this from
+				 * being a special case later.
 				 */
-				if (portal->cursorOptions & CURSOR_OPT_SCROLL)
+				if (portal->atEnd)
+					direction = NoMovementScanDirection;
+			}
+
+			/*
+			 * Change the destination to output to the tuplestore.  Note we tell
+			 * the tuplestore receiver to detoast all data passed through it; this
+			 * makes it safe to not keep a snapshot associated with the data.
+			 */
+			queryDesc->dest = CreateDestReceiver(DestTuplestore);
+			SetTuplestoreDestReceiverParams(queryDesc->dest,
+											portal->holdStore,
+											portal->holdContext,
+											true,
+											NULL,
+											NULL);
+
+			/* Fetch the result set into the tuplestore */
+			ExecutorRun(queryDesc, direction, 0, false);
+
+			queryDesc->dest->rDestroy(queryDesc->dest);
+			queryDesc->dest = NULL;
+
+			/*
+			 * Now shut down the inner executor.
+			 */
+			portal->queryDesc = NULL; /* prevent double shutdown */
+			ExecutorFinish(queryDesc);
+			ExecutorEnd(queryDesc);
+			FreeQueryDesc(queryDesc);
+
+			/*
+			 * Set the position in the result set.
+			 */
+			MemoryContextSwitchTo(portal->holdContext);
+
+			/*
+			 * Since we don't allow backward scan in MPP we didn't do the
+			 * ExecutorRewind() call few lines just above. Therefore we
+			 * don't want to reset the position because we are already in
+			 * the position we need to be. Allow this only in utility mode.
+			 */
+			if (Gp_role == GP_ROLE_UTILITY)
+			{
+				if (portal->atEnd)
 				{
-					if (!tuplestore_skiptuples(portal->holdStore,
-											   portal->portalPos,
-											   true))
-						elog(ERROR, "unexpected end of tuple stream");
+					/*
+					 * Just force the tuplestore forward to its end.  The size of the
+					 * skip request here is arbitrary.
+					 */
+					while (tuplestore_skiptuples(portal->holdStore, 1000000, true))
+						/* continue */;
+				}
+				else
+				{
+					tuplestore_rescan(portal->holdStore);
+
+					/*
+					 * In the no-scroll case, the start of the tuplestore is exactly
+					 * where we want to be, so no repositioning is wanted.
+					 */
+					if (portal->cursorOptions & CURSOR_OPT_SCROLL)
+					{
+						if (!tuplestore_skiptuples(portal->holdStore,
+												   portal->portalPos,
+												   true))
+							elog(ERROR, "unexpected end of tuple stream");
+					}
 				}
 			}
 		}
-	}
-	PG_CATCH();
-	{
-		/* Uncaught error while executing portal: mark it dead */
-		MarkPortalFailed(portal);
+	PG_CATCH(); {
+			/* Uncaught error while executing portal: mark it dead */
+			MarkPortalFailed(portal);
 
-		/* GPDB: cleanup dispatch and teardown interconnect */
-		if (portal->queryDesc)
-			mppExecutorCleanup(portal->queryDesc);
+			/* GPDB: cleanup dispatch and teardown interconnect */
+			if (portal->queryDesc)
+				mppExecutorCleanup(portal->queryDesc);
 
-		/* Restore global vars and propagate error */
-		ActivePortal = saveActivePortal;
-		CurrentResourceOwner = saveResourceOwner;
-		PortalContext = savePortalContext;
+			/* Restore global vars and propagate error */
+			ActivePortal = saveActivePortal;
+			CurrentResourceOwner = saveResourceOwner;
+			PortalContext = savePortalContext;
 
-		PG_RE_THROW();
-	}
+			PG_RE_THROW();
+		}
 	PG_END_TRY();
 
 	MemoryContextSwitchTo(oldcxt);

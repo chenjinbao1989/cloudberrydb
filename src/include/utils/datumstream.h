@@ -93,6 +93,7 @@ typedef struct DatumStreamRead
 	int64		blockFirstRowNum;
 	int64		blockFileOffset;
 	int			blockRowCount;
+	int			blockRowsProcessed;
 
 	AppendOnlyStorageRead ao_read;
 
@@ -262,7 +263,7 @@ extern DatumStreamWrite *create_datumstreamwrite(
 						Oid reloid,
 						char *title,
 						bool needsWAL,
-						RelFileNodeBackend *rnode,
+						RelFileLocatorBackend *rnode,
 						const struct f_smgr_ao *smgrAO);
 
 extern DatumStreamRead *create_datumstreamread(
@@ -274,7 +275,7 @@ extern DatumStreamRead *create_datumstreamread(
 					   char *relname,
 					   Oid reloid,
 					   char *title,
-					   RelFileNode *relFileNode,
+					   RelFileLocator *relFileNode,
 					   const struct f_smgr_ao *smgrAO);
 
 extern void datumstreamwrite_open_file(
@@ -282,7 +283,7 @@ extern void datumstreamwrite_open_file(
 						   char *fn,
 						   int64 eof,
 						   int64 eofUncompressed,
-						   RelFileNodeBackend *relFileNode,
+						   RelFileLocatorBackend *relFileNode,
 						   int32 segmentFileNum,
 						   int version);
 
@@ -291,8 +292,6 @@ extern void datumstreamread_open_file(
 						  char *fn,
 						  int64 eof,
 						  int64 eofUncompressed,
-						  RelFileNode relFileNode,
-						  int32 segmentFileNum,
 						  int version);
 
 extern void datumstreamwrite_close_file(DatumStreamWrite * ds);
@@ -322,8 +321,9 @@ extern bool datumstreamread_find_block(DatumStreamRead * datumStream,
 extern void *datumstreamread_get_upgrade_space(DatumStreamRead *datumStream,
 											   size_t len);
 
+extern bool datumstreamread_block_info(DatumStreamRead * acc);
 /*
- * MPP-17061: make sure datumstream_read_block_info was called first for the CO block
+ * MPP-17061: make sure datumstreamread_block_info was called first for the CO block
  * before calling datumstreamread_block_content.
  */
 extern void datumstreamread_block_content(DatumStreamRead * acc);

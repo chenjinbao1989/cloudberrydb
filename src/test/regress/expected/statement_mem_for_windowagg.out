@@ -2,6 +2,7 @@ CREATE TABLE dummy_table(x int, y int) DISTRIBUTED BY (y);
 INSERT INTO dummy_table SELECT generate_series(0, 20000), 0;
 INSERT INTO dummy_table SELECT generate_series(0, 20000), 3;
 INSERT INTO dummy_table SELECT generate_series(0, 20000), 10;
+set enable_parallel = off; 
 -- 1. Test that if we set statement_mem to a larger value, the tuplestore
 -- for caching the tuples in partition used in WindowAgg is able to be fitted
 -- in memory.
@@ -16,9 +17,6 @@ SELECT gp_inject_fault('winagg_after_spool_tuples', 'skip', dbid)
 (3 rows)
 
 EXPLAIN ANALYZE SELECT AVG(x) OVER (PARTITION BY y) FROM dummy_table;
-NOTICE:  winagg: tuplestore fitted in memory  (seg1 slice1 127.0.0.1:7003 pid=43473)
-NOTICE:  winagg: tuplestore fitted in memory  (seg0 slice1 127.0.0.1:7002 pid=43472)
-NOTICE:  winagg: tuplestore fitted in memory  (seg2 slice1 127.0.0.1:7004 pid=43474)
                                                          QUERY PLAN                                                          
 -----------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.00 rows=1 width=8) (actual time=6.520..15.872 rows=30003 loops=1)
@@ -58,9 +56,6 @@ SELECT gp_inject_fault('winagg_after_spool_tuples', 'skip', dbid)
 (3 rows)
 
 EXPLAIN ANALYZE SELECT AVG(x) OVER (PARTITION BY y) FROM dummy_table;
-NOTICE:  winagg: tuplestore spilled to disk  (seg0 slice1 127.0.0.1:7002 pid=43472)
-NOTICE:  winagg: tuplestore spilled to disk  (seg1 slice1 127.0.0.1:7003 pid=43473)
-NOTICE:  winagg: tuplestore spilled to disk  (seg2 slice1 127.0.0.1:7004 pid=43474)
                                                          QUERY PLAN                                                          
 -----------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.00 rows=1 width=8) (actual time=8.784..13.923 rows=30003 loops=1)
@@ -172,5 +167,6 @@ SELECT gp_inject_fault_infinite('distinct_winagg_perform_sort', 'reset', dbid)
 (3 rows)
 
 -- Do some clean-ups.
+reset enable_parallel;
 DROP TABLE dummy_table;
 RESET statement_mem;

@@ -1784,7 +1784,7 @@ CronBackgroundWorker(Datum main_arg)
 												 ALLOCSET_DEFAULT_MAXSIZE);
 
 	/* Set up a dynamic shared memory segment. */
-	seg = dsm_attach(DatumGetInt32(main_arg));
+	seg = dsm_attach(DatumGetUInt32(main_arg));
 	if (seg == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -1920,7 +1920,7 @@ ExecuteSqlString(const char *sql)
 		#if PG_VERSION_NUM >= 150000
 			querytree_list = pg_analyze_and_rewrite_fixedparams(parsetree, sql, NULL, 0, NULL);
 		#elif PG_VERSION_NUM >= 100000
-			querytree_list = pg_analyze_and_rewrite(parsetree, sql, NULL, 0, NULL);
+			querytree_list = pg_analyze_and_rewrite_fixedparams(parsetree, sql, NULL, 0, NULL);
 		#else
 			querytree_list = pg_analyze_and_rewrite(parsetree, sql, NULL, 0);
 		#endif

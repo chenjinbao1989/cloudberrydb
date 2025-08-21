@@ -5,6 +5,9 @@ insert into cost_agg_t2 select i, random() * 99999, i % 300000 from generate_ser
 analyze cost_agg_t1;
 analyze cost_agg_t2;
 
+-- start_ignore
+set gp_use_streaming_hashagg = off;
+-- end_ignore
 --
 -- Test planner's decisions on aggregates when only little memory is available.
 --
@@ -59,3 +62,24 @@ explain(costs off)
 select count(*) from test_operator_mem;
 
 abort;
+
+-- Test user-defined aggregate marked safe to execute on replicated slices without motion
+CREATE AGGREGATE my_unsafe_avg (float8)
+(
+    sfunc = float8_accum,
+    stype = float8[],
+    finalfunc = float8_avg,
+    initcond = '{0,0,0}'
+);
+CREATE AGGREGATE my_safe_avg (float8)
+(
+    sfunc = float8_accum,
+    stype = float8[],
+    finalfunc = float8_avg,
+    initcond = '{0,0,0}',
+    repsafe = true
+);
+CREATE TABLE a_reptable (a int) DISTRIBUTED REPLICATED;
+CREATE TABLE b_reptable (b int) DISTRIBUTED REPLICATED;
+EXPLAIN INSERT INTO a_reptable(a) SELECT my_unsafe_avg(b) FROM b_reptable;
+EXPLAIN INSERT INTO a_reptable(a) SELECT my_safe_avg(b) FROM b_reptable;

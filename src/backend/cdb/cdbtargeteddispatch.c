@@ -522,6 +522,7 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 			DisableTargetedDispatch(&dispatchInfo);
 			break;
 		case T_WindowAgg:
+		case T_WindowHashAgg:
 		case T_TableFunctionScan:
 		case T_RecursiveUnion:
 			/* no change to dispatchInfo */
@@ -532,6 +533,7 @@ DirectDispatchUpdateContentIdsFromPlan(PlannerInfo *root, Plan *plan)
 													 * so disable */
 			break;
 		case T_SplitUpdate:
+		case T_SplitMerge:
 			break;
 		case T_CustomScan:
 			break;

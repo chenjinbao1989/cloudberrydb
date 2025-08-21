@@ -1,4 +1,29 @@
-
+/*-------------------------------------------------------------------------
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ * sm3.c
+ *
+ * IDENTIFICATION
+ *          src/common/sm3.c
+ *
+ *-------------------------------------------------------------------------
+ */
 #ifndef FRONTEND
 #include "postgres.h"
 #else
@@ -81,7 +106,7 @@ SM3_Transform(pg_sm3_ctx *context, const uint8 *data)
 	uint32_t W[68], W_B[64];
 	int		j;
 
-	uint32_t tmp, *tmp_data;
+	uint32_t tmp2, *tmp_data;
 	uint32_t SS1, SS2, TT1, TT2;
 	uint32_t T;
 
@@ -101,8 +126,8 @@ SM3_Transform(pg_sm3_ctx *context, const uint8 *data)
 	}
 
 	for (; j <= 67; j++) {
-		tmp = W[j - 16] ^ W[j - 9] ^ rol32(W[j - 3], 15);
-		W[j] = SM3_P1(tmp) ^ (rol32(W[j - 13], 7)) ^ W[j - 6];
+		tmp2 = W[j - 16] ^ W[j - 9] ^ rol32(W[j - 3], 15);
+		W[j] = SM3_P1(tmp2) ^ (rol32(W[j - 13], 7)) ^ W[j - 6];
 	}
 
 	for (j = 0; j < 64; j++) {

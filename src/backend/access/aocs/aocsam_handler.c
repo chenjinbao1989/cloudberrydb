@@ -47,6 +47,7 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_rusage.h"
 #include "utils/guc.h"
+#include "utils/sampling.h"
 
 #define IS_BTREE(r) ((r)->rd_rel->relam == BTREE_AM_OID)
 
@@ -269,7 +270,7 @@ remove_dml_state(const Oid relationOid)
  *
  * This function should be called exactly once per relation.
  */
-void
+static void
 aoco_dml_init(Relation relation, CmdType operation)
 {
 	init_aoco_dml_states();
@@ -279,7 +280,7 @@ aoco_dml_init(Relation relation, CmdType operation)
 /*
  * This function should be called exactly once per relation.
  */
-void
+static void
 aoco_dml_finish(Relation relation, CmdType operation)
 {
 	AOCODMLState *state;
@@ -1137,7 +1138,7 @@ static TM_Result
 aoco_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 				  CommandId cid, Snapshot snapshot, Snapshot crosscheck,
 				  bool wait, TM_FailureData *tmfd,
-				  LockTupleMode *lockmode, bool *update_indexes)
+				  LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
 	AOCSInsertDesc insertDesc;
 	AOCSDeleteDesc deleteDesc;
@@ -1164,9 +1165,9 @@ aoco_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 	aocs_insert(insertDesc, slot);
 
-	pgstat_count_heap_update(relation, false);
+	pgstat_count_heap_update(relation, false, false);
 	/* No HOT updates with AO tables. */
-	*update_indexes = true;
+	*update_indexes = TU_All;
 
 	return result;
 }
@@ -1309,7 +1310,7 @@ aoco_index_delete_tuples(Relation rel,
  */
 static void
 aoco_relation_set_new_filenode(Relation rel,
-							   const RelFileNode *newrnode,
+							   const RelFileLocator *newrnode,
 							   char persistence,
 							   TransactionId *freezeXid,
 							   MultiXactId *minmulti)
@@ -1329,7 +1330,7 @@ aoco_relation_set_new_filenode(Relation rel,
 	 *
 	 * Segment files will be created when / if needed.
 	 */
-	srel = RelationCreateStorage(*newrnode, persistence, SMGR_AO, rel);
+	srel = RelationCreateStorage(*newrnode, persistence, true, SMGR_AO, rel);
 
 	/*
 	 * If required, set up an init fork for an unlogged table so that it can
@@ -1387,7 +1388,7 @@ aoco_relation_nontransactional_truncate(Relation rel)
 }
 
 static void
-aoco_relation_copy_data(Relation rel, const RelFileNode *newrnode)
+aoco_relation_copy_data(Relation rel, const RelFileLocator *newrnode)
 {
 	SMgrRelation dstrel;
 
@@ -1396,7 +1397,6 @@ aoco_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	 * implementation
 	 */
 	dstrel = smgropen(*newrnode, rel->rd_backend, SMGR_AO, rel);
-	RelationOpenSmgr(rel);
 
 	/*
 	 * Create and copy all forks of the relation, and schedule unlinking of
@@ -1405,9 +1405,9 @@ aoco_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	 * NOTE: any conflict in relfilenode value will be caught in
 	 * RelationCreateStorage().
 	 */
-	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence, SMGR_AO, rel);
+	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence, true, SMGR_AO, rel);
 
-	copy_append_only_data(rel->rd_node, *newrnode, rel->rd_smgr, dstrel, rel->rd_backend, rel->rd_rel->relpersistence);
+	copy_append_only_data(rel->rd_locator, *newrnode, RelationGetSmgr(rel), dstrel, rel->rd_backend, rel->rd_rel->relpersistence);
 
 	/*
 	 * For append-optimized tables, no forks other than the main fork should
@@ -1416,7 +1416,7 @@ aoco_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	 */
 	if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
 	{
-		Assert (smgrexists(rel->rd_smgr, INIT_FORKNUM));
+		Assert (smgrexists(RelationGetSmgr(rel), INIT_FORKNUM));
 
 		/*
 		 * INIT_FORK is empty, creating it is sufficient, no need to copy
@@ -1623,10 +1623,13 @@ static bool
 aoco_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
                                    BufferAccessStrategy bstrategy)
 {
-	AOCSScanDesc aoscan = (AOCSScanDesc) scan;
-	aoscan->targetTupleId = blockno;
-
-	return true;
+	/*
+	 * For append-optimized relations, we use a separate sampling
+	 * method. See table_relation_acquire_sample_rows().
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_INTERNAL_ERROR),
+			 errmsg("API not supported for appendoptimized relations")));
 }
 
 static bool
@@ -1634,28 +1637,78 @@ aoco_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
                                    double *liverows, double *deadrows,
                                    TupleTableSlot *slot)
 {
-	AOCSScanDesc aoscan = (AOCSScanDesc) scan;
-	bool		ret = false;
+	/*
+	 * For append-optimized relations, we use a separate sampling
+	 * method. See table_relation_acquire_sample_rows().
+	 */
+	ereport(ERROR,
+			(errcode(ERRCODE_INTERNAL_ERROR),
+			 errmsg("API not supported for appendoptimized relations")));
+}
 
-	/* skip several tuples if they are not sampling target */
-	while (aoscan->targetTupleId > aoscan->nextTupleId)
+static int
+aoco_acquire_sample_rows(Relation onerel, int elevel, HeapTuple *rows,
+						 int targrows, double *totalrows, double *totaldeadrows)
+{
+	int		numrows = 0;	/* # rows now in reservoir */
+	double	liverows = 0;	/* # live rows seen */
+	double	deadrows = 0;	/* # dead rows seen */
+
+	Assert(targrows > 0);
+
+	TableScanDesc scan = table_beginscan_analyze(onerel);
+	TupleTableSlot *slot = table_slot_create(onerel, NULL);
+	AOCSScanDesc aocoscan = (AOCSScanDesc) scan;
+
+	int64 totaltupcount = AOCSScanDesc_TotalTupCount(aocoscan);
+	int64 totaldeadtupcount = 0;
+	if (aocoscan->total_seg > 0 )
+		totaldeadtupcount = AppendOnlyVisimap_GetRelationHiddenTupleCount(&aocoscan->visibilityMap);
+	/*
+     * The conversion from int64 to double (53 significant bits) is safe as the
+	 * AOTupleId is 48bits, the max value of totalrows is never greater than
+	 * AOTupleId_MaxSegmentFileNum * AOTupleId_MaxRowNum (< 48 significant bits).
+	 */
+	*totalrows = (double) (totaltupcount - totaldeadtupcount);
+	*totaldeadrows = (double) totaldeadtupcount;
+
+	/* Prepare for sampling tuple numbers */
+	RowSamplerData rs;
+	RowSampler_Init(&rs, *totalrows, targrows, random());
+
+	while (RowSampler_HasMore(&rs))
 	{
-		aoco_getnextslot(scan, ForwardScanDirection, slot);
-		aoscan->nextTupleId++;
-	}
+		aocoscan->targrow = RowSampler_Next(&rs);
 
-	if (aoscan->targetTupleId == aoscan->nextTupleId)
-	{
-		ret = aoco_getnextslot(scan, ForwardScanDirection, slot);
-		aoscan->nextTupleId++;
+		vacuum_delay_point();
 
-		if (ret)
-			*liverows += 1;
+		if (aocs_get_target_tuple(aocoscan, aocoscan->targrow, slot))
+		{
+			rows[numrows++] = ExecCopySlotHeapTuple(slot);
+			liverows++;
+		}
 		else
-			*deadrows += 1; /* if return an invisible tuple */
+			deadrows++;
+		
+		ExecClearTuple(slot);
 	}
 
-	return ret;
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+
+	/*
+	 * Emit some interesting relation info
+	 */
+	ereport(elevel,
+			(errmsg("\"%s\": scanned " INT64_FORMAT " rows, "
+					"containing %.0f live rows and %.0f dead rows; "
+					"%d rows in sample, %.0f accurate total live rows, "
+					"%.f accurate total dead rows",
+					RelationGetRelationName(onerel),
+					rs.m, liverows, deadrows, numrows,
+					*totalrows, *totaldeadrows)));
+
+	return numrows;
 }
 
 static double
@@ -1990,15 +2043,25 @@ static uint64
 aoco_relation_size(Relation rel, ForkNumber forkNumber)
 {
 	AOCSFileSegInfo	  **allseg;
-	Snapshot			snapshot;
 	uint64				totalbytes	= 0;
 	int					totalseg;
 
 	if (forkNumber != MAIN_FORKNUM)
 		return totalbytes;
 
-	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	allseg = GetAllAOCSFileSegInfo(rel, snapshot, &totalseg, NULL);
+	/*
+	 * Pass NULL as snapshot so that GetAllAOCSFileSegInfo -> systable_beginscan
+	 * uses GetCatalogSnapshot() internally.  This is consistent with
+	 * appendonly_relation_size() for AO row tables and ensures pg_aocsseg
+	 * entries are visible even when called within the same transaction that
+	 * populated them (e.g. ALTER TABLE SET DISTRIBUTED BY).
+	 *
+	 * Using GetLatestSnapshot() here previously caused the metadata to be
+	 * invisible on QE segments during in-transaction redistribution, leading
+	 * to a zero return value and a subsequent assertion failure in
+	 * vac_update_relstats().
+	 */
+	allseg = GetAllAOCSFileSegInfo(rel, NULL, &totalseg, NULL);
 	for (int seg = 0; seg < totalseg; seg++)
 	{
 		for (int attr = 0; attr < RelationGetNumberOfAttributes(rel); attr++)
@@ -2025,7 +2088,6 @@ aoco_relation_size(Relation rel, ForkNumber forkNumber)
 		FreeAllAOCSSegFileInfo(allseg, totalseg);
 		pfree(allseg);
 	}
-	UnregisterSnapshot(snapshot);
 
 	return totalbytes;
 }
@@ -2581,13 +2643,14 @@ static TableAmRoutine ao_column_methods = {
 	.tuple_satisfies_snapshot = aoco_tuple_satisfies_snapshot,
 	.index_delete_tuples = aoco_index_delete_tuples,
 
-	.relation_set_new_filenode = aoco_relation_set_new_filenode,
+	.relation_set_new_filelocator = aoco_relation_set_new_filenode,
 	.relation_nontransactional_truncate = aoco_relation_nontransactional_truncate,
 	.relation_copy_data = aoco_relation_copy_data,
 	.relation_copy_for_cluster = aoco_relation_copy_for_cluster,
 	.relation_vacuum = aoco_vacuum_rel,
 	.scan_analyze_next_block = aoco_scan_analyze_next_block,
 	.scan_analyze_next_tuple = aoco_scan_analyze_next_tuple,
+	.relation_acquire_sample_rows = aoco_acquire_sample_rows,
 	.index_build_range_scan = aoco_index_build_range_scan,
 	.index_validate_scan = aoco_index_validate_scan,
 
@@ -2602,8 +2665,9 @@ static TableAmRoutine ao_column_methods = {
 	.scan_bitmap_next_tuple = aoco_scan_bitmap_next_tuple,
 	.scan_sample_next_block = aoco_scan_sample_next_block,
 	.scan_sample_next_tuple = aoco_scan_sample_next_tuple,
-	.acquire_sample_rows = acquire_sample_rows,
 
+	.dml_init = aoco_dml_init,
+	.dml_fini = aoco_dml_finish,
 	.amoptions = ao_amoptions,
 	.swap_relation_files = aoco_swap_relation_files,
 	.validate_column_encoding_clauses = aoco_validate_column_encoding_clauses,
