@@ -43,9 +43,7 @@ ifeq "$(with_quicklz)" "yes"
 endif
 $(call recurse,all install clean distclean, $(recurse_targets))
 
-#all: gpcloud pxf mapreduce orafce
-
-all:
+all: gpcloud pxf mapreduce orafce
 
 gpcloud:
 	@if [ "$(enable_gpcloud)" = "yes" ]; then \
@@ -69,19 +67,19 @@ orafce:
 	fi
 
 install:
-#	@if [ "$(enable_gpcloud)" = "yes" ]; then \
-#		$(MAKE) -C gpcloud install && \
-#		$(MAKE) -C gpcloud/bin/gpcheckcloud install; \
-#	fi
-#	@if [ "$(enable_mapreduce)" = "yes" ]; then \
-#		$(MAKE) -C gpmapreduce install; \
-#	fi
-#	@if [ "$(enable_pxf)" = "yes" ]; then \
-#		$(MAKE) -C pxf_fdw install; \
-#	fi
-#	@if [ "$(enable_orafce)" = "yes" ]; then \
-#		$(MAKE) -C orafce NO_PGXS=true install; \
-#	fi
+	@if [ "$(enable_gpcloud)" = "yes" ]; then \
+		$(MAKE) -C gpcloud install && \
+		$(MAKE) -C gpcloud/bin/gpcheckcloud install; \
+	fi
+	@if [ "$(enable_mapreduce)" = "yes" ]; then \
+		$(MAKE) -C gpmapreduce install; \
+	fi
+	@if [ "$(enable_pxf)" = "yes" ]; then \
+		$(MAKE) -C pxf_fdw install; \
+	fi
+	@if [ "$(enable_orafce)" = "yes" ]; then \
+		$(MAKE) -C orafce NO_PGXS=true install; \
+	fi
 
 clean:
 	if [ "$(enable_mapreduce)" = "yes" ]; then $(MAKE) -C gpmapreduce clean; fi

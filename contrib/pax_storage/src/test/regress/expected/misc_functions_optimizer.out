@@ -595,16 +595,16 @@ SELECT * FROM tenk1 a JOIN my_gen_series(1,1000) g ON a.unique1 = g;
 (7 rows)
 
 EXPLAIN (COSTS OFF)
-SELECT * FROM tenk1 a JOIN my_gen_series(1,5) g ON a.unique1 = g;
-                            QUERY PLAN                            
-------------------------------------------------------------------
+SELECT * FROM tenk1 a JOIN my_gen_series(1,10) g ON a.unique1 = g;
+                     QUERY PLAN                     
+----------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Hash Join
-         Hash Cond: (a.unique1 = my_gen_series.my_gen_series)
+         Hash Cond: (a.unique1 = g.g)
          ->  Seq Scan on tenk1 a
          ->  Hash
-               ->  Function Scan on my_gen_series
- Optimizer: Pivotal Optimizer (GPORCA)
+               ->  Function Scan on my_gen_series g
+ Optimizer: Postgres query optimizer
 (7 rows)
 
 -- Test functions for control data
