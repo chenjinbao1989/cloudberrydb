@@ -25,6 +25,7 @@
 
 #include "catalog/gp_distribution_policy.h"
 #include "catalog/heap.h"
+#include "executor/execdesc.h"
 #include "miscadmin.h"
 #include "nodes/altertablenodes.h"
 #include "nodes/extensible.h"
@@ -91,6 +92,117 @@
 #define COPY_LOCATION_FIELD(fldname) \
 	(newnode->fldname = from->fldname)
 
+
+/*
+ * _copyPlannedStmt requires custom handling because the slices field is an
+ * array of PlanSlice structs (not a Node pointer), requiring a loop copy that
+ * also deep-copies each element's List* fields.
+ */
+static PlannedStmt *
+_copyPlannedStmt(const PlannedStmt *from)
+{
+	PlannedStmt *newnode = makeNode(PlannedStmt);
+
+	COPY_SCALAR_FIELD(commandType);
+	COPY_SCALAR_FIELD(planGen);
+	COPY_SCALAR_FIELD(queryId);
+	COPY_SCALAR_FIELD(hasReturning);
+	COPY_SCALAR_FIELD(hasModifyingCTE);
+	COPY_SCALAR_FIELD(canSetTag);
+	COPY_SCALAR_FIELD(transientPlan);
+	COPY_SCALAR_FIELD(oneoffPlan);
+	COPY_SCALAR_FIELD(simplyUpdatableRel);
+	COPY_SCALAR_FIELD(dependsOnRole);
+	COPY_SCALAR_FIELD(parallelModeNeeded);
+	COPY_SCALAR_FIELD(jitFlags);
+	COPY_NODE_FIELD(planTree);
+	COPY_SCALAR_FIELD(numSlices);
+	newnode->slices = palloc(from->numSlices * sizeof(PlanSlice));
+	for (int i = 0; i < from->numSlices; i++)
+	{
+		COPY_SCALAR_FIELD(slices[i].sliceIndex);
+		COPY_SCALAR_FIELD(slices[i].parentIndex);
+		COPY_SCALAR_FIELD(slices[i].gangType);
+		COPY_SCALAR_FIELD(slices[i].numsegments);
+		COPY_SCALAR_FIELD(slices[i].parallel_workers);
+		COPY_SCALAR_FIELD(slices[i].segindex);
+		COPY_SCALAR_FIELD(slices[i].directDispatch.isDirectDispatch);
+		COPY_NODE_FIELD(slices[i].directDispatch.contentIds);
+	}
+	COPY_NODE_FIELD(rtable);
+	COPY_NODE_FIELD(permInfos);
+	COPY_NODE_FIELD(resultRelations);
+	COPY_NODE_FIELD(appendRelations);
+	COPY_NODE_FIELD(subplans);
+	COPY_POINTER_FIELD(subplan_sliceIds, list_length(from->subplans) * sizeof(int));
+	COPY_BITMAPSET_FIELD(rewindPlanIDs);
+	COPY_NODE_FIELD(rowMarks);
+	COPY_NODE_FIELD(relationOids);
+	COPY_NODE_FIELD(invalItems);
+	COPY_NODE_FIELD(paramExecTypes);
+	COPY_NODE_FIELD(utilityStmt);
+	COPY_LOCATION_FIELD(stmt_location);
+	COPY_SCALAR_FIELD(stmt_len);
+	COPY_NODE_FIELD(intoPolicy);
+	COPY_SCALAR_FIELD(query_mem);
+	COPY_NODE_FIELD(intoClause);
+	COPY_NODE_FIELD(copyIntoClause);
+	COPY_NODE_FIELD(refreshClause);
+	COPY_SCALAR_FIELD(metricsQueryType);
+	COPY_NODE_FIELD(extensionContext);
+
+	return newnode;
+}
+
+/*
+ * _copyMotion requires custom handling because the senderSliceInfo field is
+ * a single PlanSlice* (not a Node pointer), requiring a shallow palloc copy.
+ */
+static Motion *
+_copyMotion(const Motion *from)
+{
+	Motion	   *newnode = makeNode(Motion);
+
+	COPY_SCALAR_FIELD(plan.startup_cost);
+	COPY_SCALAR_FIELD(plan.total_cost);
+	COPY_SCALAR_FIELD(plan.plan_rows);
+	COPY_SCALAR_FIELD(plan.plan_width);
+	COPY_SCALAR_FIELD(plan.parallel_aware);
+	COPY_SCALAR_FIELD(plan.parallel_safe);
+	COPY_SCALAR_FIELD(plan.async_capable);
+	COPY_SCALAR_FIELD(plan.plan_node_id);
+	COPY_NODE_FIELD(plan.targetlist);
+	COPY_NODE_FIELD(plan.qual);
+	COPY_NODE_FIELD(plan.lefttree);
+	COPY_NODE_FIELD(plan.righttree);
+	COPY_NODE_FIELD(plan.initPlan);
+	COPY_BITMAPSET_FIELD(plan.extParam);
+	COPY_BITMAPSET_FIELD(plan.allParam);
+	COPY_NODE_FIELD(plan.flow);
+	COPY_SCALAR_FIELD(plan.locustype);
+	COPY_SCALAR_FIELD(plan.parallel);
+	COPY_SCALAR_FIELD(plan.operatorMemKB);
+	COPY_SCALAR_FIELD(motionType);
+	COPY_SCALAR_FIELD(sendSorted);
+	COPY_SCALAR_FIELD(motionID);
+	COPY_NODE_FIELD(hashExprs);
+	COPY_POINTER_FIELD(hashFuncs, list_length(from->hashExprs) * sizeof(Oid));
+	COPY_SCALAR_FIELD(numHashSegments);
+	COPY_SCALAR_FIELD(segidColIdx);
+	COPY_SCALAR_FIELD(numSortCols);
+	COPY_POINTER_FIELD(sortColIdx, from->numSortCols * sizeof(AttrNumber));
+	COPY_POINTER_FIELD(sortOperators, from->numSortCols * sizeof(Oid));
+	COPY_POINTER_FIELD(collations, from->numSortCols * sizeof(Oid));
+	COPY_POINTER_FIELD(nullsFirst, from->numSortCols * sizeof(bool));
+
+	if (from->senderSliceInfo)
+	{
+		newnode->senderSliceInfo = palloc(sizeof(PlanSlice));
+		memcpy(newnode->senderSliceInfo, from->senderSliceInfo, sizeof(PlanSlice));
+	}
+
+	return newnode;
+}
 
 /* ****************************************************************
  *					 plannodes.h copy functions
@@ -196,6 +308,234 @@ _copyBitmapset(const Bitmapset *from)
 	return bms_copy(from);
 }
 
+/*
+ * _copyColumnDef requires custom handling because the missingVal field is a
+ * Datum that needs a conditional deep copy via datumCopy when it holds a
+ * by-reference varlena value.
+ */
+static ColumnDef *
+_copyColumnDef(const ColumnDef *from)
+{
+	ColumnDef  *newnode = makeNode(ColumnDef);
+
+	COPY_STRING_FIELD(colname);
+	COPY_NODE_FIELD(typeName);
+	COPY_STRING_FIELD(compression);
+	COPY_SCALAR_FIELD(inhcount);
+	COPY_SCALAR_FIELD(is_local);
+	COPY_SCALAR_FIELD(is_not_null);
+	COPY_SCALAR_FIELD(is_from_type);
+	COPY_SCALAR_FIELD(attnum);
+	COPY_SCALAR_FIELD(storage);
+	COPY_STRING_FIELD(storage_name);
+	COPY_NODE_FIELD(raw_default);
+	COPY_NODE_FIELD(cooked_default);
+	COPY_SCALAR_FIELD(hasCookedMissingVal);
+	COPY_SCALAR_FIELD(missingIsNull);
+	if (from->hasCookedMissingVal && !from->missingIsNull)
+		newnode->missingVal = datumCopy(from->missingVal, false, -1);
+	COPY_SCALAR_FIELD(identity);
+	COPY_NODE_FIELD(identitySequence);
+	COPY_SCALAR_FIELD(generated);
+	COPY_NODE_FIELD(collClause);
+	COPY_SCALAR_FIELD(collOid);
+	COPY_NODE_FIELD(constraints);
+	COPY_NODE_FIELD(encoding);
+	COPY_NODE_FIELD(fdwoptions);
+	COPY_LOCATION_FIELD(location);
+
+	return newnode;
+}
+
+
+/*
+ * _copyPathTarget requires custom handling because its sortgrouprefs field is
+ * a pointer array sized by list_length(exprs), requiring conditional copy.
+ * PathTarget is marked no_copy_equal so the generator skips it.
+ */
+static PathTarget *
+_copyPathTarget(const PathTarget *from)
+{
+	PathTarget *newnode = makeNode(PathTarget);
+
+	COPY_NODE_FIELD(exprs);
+	if (from->sortgrouprefs)
+	{
+		int numCols = list_length(from->exprs);
+
+		if (numCols > 0)
+			COPY_POINTER_FIELD(sortgrouprefs, numCols * sizeof(Index));
+	}
+	COPY_SCALAR_FIELD(cost);
+	COPY_SCALAR_FIELD(width);
+	COPY_SCALAR_FIELD(has_volatile_expr);
+
+	return newnode;
+}
+
+/*
+ * _copyAlteredTableInfo requires custom handling because it contains a
+ * TupleDesc (copied via CreateTupleDescCopyConstr) and a List* array
+ * iterated by AT_NUM_PASSES. Defined in nodes/altertablenodes.h which is
+ * outside gen_node_support.pl's input scope.
+ */
+static AlteredTableInfo *
+_copyAlteredTableInfo(const AlteredTableInfo *from)
+{
+	int			i;
+	AlteredTableInfo *newnode = makeNode(AlteredTableInfo);
+
+	COPY_SCALAR_FIELD(relid);
+	COPY_SCALAR_FIELD(relkind);
+	if (from->oldDesc)
+		newnode->oldDesc = CreateTupleDescCopyConstr(from->oldDesc);
+	/* rel is a transient open-table pointer; leave NULL after makeNode */
+
+	for (i = 0; i < AT_NUM_PASSES; i++)
+		COPY_NODE_FIELD(subcmds[i]);
+
+	COPY_NODE_FIELD(constraints);
+	COPY_NODE_FIELD(newvals);
+	COPY_NODE_FIELD(afterStmts);
+	COPY_SCALAR_FIELD(verify_new_notnull);
+	COPY_SCALAR_FIELD(rewrite);
+	COPY_SCALAR_FIELD(newAccessMethod);
+	COPY_SCALAR_FIELD(dist_opfamily_changed);
+	COPY_SCALAR_FIELD(new_opclass);
+	COPY_SCALAR_FIELD(newTableSpace);
+	COPY_SCALAR_FIELD(chgPersistence);
+	COPY_SCALAR_FIELD(newrelpersistence);
+	COPY_NODE_FIELD(partition_constraint);
+	COPY_SCALAR_FIELD(validate_default);
+	COPY_NODE_FIELD(changedConstraintOids);
+	COPY_NODE_FIELD(changedConstraintDefs);
+	COPY_NODE_FIELD(changedIndexOids);
+	COPY_NODE_FIELD(changedIndexDefs);
+	COPY_STRING_FIELD(replicaIdentityIndex);
+	COPY_STRING_FIELD(clusterOnIndex);
+	COPY_NODE_FIELD(changedStatisticsOids);
+	COPY_NODE_FIELD(changedStatisticsDefs);
+	COPY_NODE_FIELD(beforeStmtLists);
+	COPY_NODE_FIELD(constraintLists);
+
+	return newnode;
+}
+
+/*
+ * _copyCookedConstraint requires custom handling because its struct is
+ * defined in catalog/heap.h which is outside gen_node_support.pl's input
+ * scope.
+ */
+static CookedConstraint *
+_copyCookedConstraint(const CookedConstraint *from)
+{
+	CookedConstraint *newnode = makeNode(CookedConstraint);
+
+	COPY_SCALAR_FIELD(contype);
+	COPY_SCALAR_FIELD(conoid);
+	COPY_STRING_FIELD(name);
+	COPY_SCALAR_FIELD(attnum);
+	COPY_NODE_FIELD(expr);
+	COPY_SCALAR_FIELD(skip_validation);
+	COPY_SCALAR_FIELD(is_local);
+	COPY_SCALAR_FIELD(inhcount);
+	COPY_SCALAR_FIELD(is_no_inherit);
+
+	return newnode;
+}
+
+/*
+ * _copyOidAssignment requires custom handling because its struct is defined in
+ * executor/execdesc.h which is outside gen_node_support.pl's input scope.
+ */
+static OidAssignment *
+_copyOidAssignment(const OidAssignment *from)
+{
+	OidAssignment *newnode = makeNode(OidAssignment);
+
+	COPY_SCALAR_FIELD(catalog);
+	COPY_STRING_FIELD(objname);
+	COPY_SCALAR_FIELD(namespaceOid);
+	COPY_SCALAR_FIELD(keyOid1);
+	COPY_SCALAR_FIELD(keyOid2);
+	COPY_SCALAR_FIELD(keyOid3);
+	COPY_SCALAR_FIELD(keyOid4);
+	COPY_SCALAR_FIELD(oid);
+
+	return newnode;
+}
+
+/*
+ * _copySliceTable requires custom handling because it contains an ExecSlice
+ * array (not a Node pointer), defined in executor/execdesc.h outside the
+ * generator's input scope.
+ */
+static SliceTable *
+_copySliceTable(const SliceTable *from)
+{
+	SliceTable *newnode = makeNode(SliceTable);
+
+	COPY_SCALAR_FIELD(localSlice);
+	COPY_SCALAR_FIELD(numSlices);
+
+	newnode->slices = palloc0(from->numSlices * sizeof(ExecSlice));
+	for (int i = 0; i < from->numSlices; i++)
+	{
+		COPY_SCALAR_FIELD(slices[i].sliceIndex);
+		COPY_SCALAR_FIELD(slices[i].rootIndex);
+		COPY_SCALAR_FIELD(slices[i].parentIndex);
+		COPY_SCALAR_FIELD(slices[i].planNumSegments);
+		COPY_NODE_FIELD(slices[i].children);
+		COPY_SCALAR_FIELD(slices[i].gangType);
+		COPY_NODE_FIELD(slices[i].segments);
+		newnode->slices[i].primaryGang = from->slices[i].primaryGang;
+		COPY_NODE_FIELD(slices[i].primaryProcesses);
+		COPY_BITMAPSET_FIELD(slices[i].processesMap);
+		COPY_SCALAR_FIELD(slices[i].useMppParallelMode);
+		COPY_SCALAR_FIELD(slices[i].parallel_workers);
+	}
+
+	COPY_SCALAR_FIELD(hasMotions);
+	COPY_SCALAR_FIELD(instrument_options);
+	COPY_SCALAR_FIELD(ic_instance_id);
+
+	return newnode;
+}
+
+/*
+ * _copyCdbProcess requires custom handling because its struct is defined in
+ * cdb/cdbgang.h which is outside gen_node_support.pl's input scope.
+ */
+static CdbProcess *
+_copyCdbProcess(const CdbProcess *from)
+{
+	CdbProcess *newnode = makeNode(CdbProcess);
+
+	COPY_STRING_FIELD(listenerAddr);
+	COPY_SCALAR_FIELD(listenerPort);
+	COPY_SCALAR_FIELD(pid);
+	COPY_SCALAR_FIELD(contentid);
+	COPY_SCALAR_FIELD(dbid);
+
+	return newnode;
+}
+
+/*
+ * _copyCursorPosInfo requires custom handling because its struct is defined in
+ * executor/execdesc.h which is outside gen_node_support.pl's input scope.
+ */
+static CursorPosInfo *
+_copyCursorPosInfo(const CursorPosInfo *from)
+{
+	CursorPosInfo *newnode = makeNode(CursorPosInfo);
+
+	COPY_STRING_FIELD(cursor_name);
+	COPY_SCALAR_FIELD(gp_segment_id);
+	COPY_BINARY_FIELD(ctid, sizeof(ItemPointerData));
+	COPY_SCALAR_FIELD(table_oid);
+
+	return newnode;
+}
 
 /*
  * copyObjectImpl -- implementation of copyObject(); see nodes/nodes.h
@@ -217,6 +557,34 @@ copyObjectImpl(const void *from)
 	switch (nodeTag(from))
 	{
 #include "copyfuncs.switch.c"
+
+		case T_PathTarget:
+			retval = _copyPathTarget(from);
+			break;
+
+		case T_AlteredTableInfo:
+			retval = _copyAlteredTableInfo(from);
+			break;
+
+		case T_CookedConstraint:
+			retval = _copyCookedConstraint(from);
+			break;
+
+		case T_OidAssignment:
+			retval = _copyOidAssignment(from);
+			break;
+
+		case T_SliceTable:
+			retval = _copySliceTable(from);
+			break;
+
+		case T_CdbProcess:
+			retval = _copyCdbProcess(from);
+			break;
+
+		case T_CursorPosInfo:
+			retval = _copyCursorPosInfo(from);
+			break;
 
 		case T_List:
 			retval = list_copy_deep(from);

@@ -1295,8 +1295,8 @@ typedef struct RelOptInfo
  */
 typedef struct RelAggInfo
 {
-	pg_node_attr(custom_copy_equal)
-	
+	pg_node_attr(no_copy, no_equal)
+
 	NodeTag		type;
 
 	Relids		relids;			/* Base rels contained in this grouped rel. */

@@ -108,7 +108,7 @@ my @nodetag_only_files = qw(
 # ABI stability during development.
 
 my $last_nodetag = 'WindowObjectData';
-my $last_nodetag_no = 557;
+my $last_nodetag_no = 562;
 
 # output file names
 my @output_files;
@@ -471,6 +471,8 @@ foreach my $infile (@ARGV)
 								&& $attr !~ /^read_as\(\w+\)$/
 								&& !elem $attr,
 								qw(copy_as_scalar
+								copy_ignore
+								copy_as_varlena
 								equal_as_scalar
 								equal_ignore
 								equal_ignore_if_zero
@@ -715,6 +717,7 @@ _equal${n}(const $n *a, const $n *b)
 		my $array_size_field;
 		my $copy_as_field;
 		my $copy_as_scalar = 0;
+		my $copy_as_varlena = 0;
 		my $equal_as_scalar = 0;
 		foreach my $a (@a)
 		{
@@ -734,9 +737,17 @@ _equal${n}(const $n *a, const $n *b)
 			{
 				$copy_as_scalar = 1;
 			}
+			elsif ($a eq 'copy_as_varlena')
+			{
+				$copy_as_varlena = 1;
+			}
 			elsif ($a eq 'equal_as_scalar')
 			{
 				$equal_as_scalar = 1;
+			}
+			elsif ($a eq 'copy_ignore')
+			{
+				$copy_ignore = 1;
 			}
 			elsif ($a eq 'equal_ignore')
 			{
@@ -754,6 +765,12 @@ _equal${n}(const $n *a, const $n *b)
 		elsif ($copy_as_scalar)
 		{
 			print $cff "\tCOPY_SCALAR_FIELD($f);\n"
+			  unless $copy_ignore;
+			$copy_ignore = 1;
+		}
+		elsif ($copy_as_varlena)
+		{
+			print $cff "\tCOPY_VARLENA_FIELD($f, -1);\n"
 			  unless $copy_ignore;
 			$copy_ignore = 1;
 		}
@@ -864,6 +881,22 @@ _equal${n}(const $n *a, const $n *b)
 			# the table itself, just reference the original one.
 			print $cff "\tCOPY_SCALAR_FIELD($f);\n" unless $copy_ignore;
 			print $eff "\tCOMPARE_SCALAR_FIELD($f);\n" unless $equal_ignore;
+		}
+		elsif ($copy_ignore && $equal_ignore)
+		{
+			# Both copy and equal were already handled by explicit attributes
+			# (copy_as_scalar, copy_as_varlena, copy_ignore, equal_as_scalar,
+			# equal_ignore, etc.) above, so no type-based handling is needed.
+		}
+		elsif ($t eq 'bytea*')
+		{
+			# bytea* is a varlena datum; copy requires copy_as_varlena and
+			# equal requires equal_ignore (or a hand-written equal function).
+			die
+			  "could not handle type \"$t\" in struct \"$n\" field \"$f\": "
+			  . "use pg_node_attr(copy_as_varlena) for copy "
+			  . "and pg_node_attr(equal_ignore) for equal\n"
+			  unless $copy_ignore && $equal_ignore;
 		}
 		else
 		{

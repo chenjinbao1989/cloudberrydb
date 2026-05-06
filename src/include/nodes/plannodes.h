@@ -77,7 +77,7 @@ typedef enum DMLAction
  */
 typedef struct PlannedStmt
 {
-	pg_node_attr(no_equal, no_query_jumble)
+	pg_node_attr(custom_copy_equal, no_equal, no_query_jumble)
 
 	NodeTag		type;
 
@@ -215,7 +215,7 @@ typedef struct Flow
 
 	/* Locus type (optimizer flow characterization).
 	 */
-	CdbLocusType	locustype;	/* merge16_delete_temp  */
+	CdbLocusType	locustype pg_node_attr(copy_as_scalar, equal_as_scalar);	/* merge16_delete_temp  */
 
 	/* If flotype is FLOW_SINGLETON, then this is the segment (-1 for entry)
 	 * on which tuples occur.
@@ -1648,18 +1648,18 @@ typedef struct WindowHashAgg
 	Plan		plan;
 	Index		winref;			/* ID referenced by window functions */
 	int			partNumCols;	/* number of columns in partition clause */
-	AttrNumber *partColIdx;		/* their indexes in the target list */
-	Oid		   *partOperators;	/* equality operators for partition columns */
-	Oid		   *partCollations; /* collations for partition columns */
+	AttrNumber *partColIdx pg_node_attr(array_size(partNumCols));		/* their indexes in the target list */
+	Oid		   *partOperators pg_node_attr(array_size(partNumCols));	/* equality operators for partition columns */
+	Oid		   *partCollations pg_node_attr(array_size(partNumCols)); /* collations for partition columns */
 	/*
-	 * Different with `WindowAgg`, WindowHashAgg may use the 
+	 * Different with `WindowAgg`, WindowHashAgg may use the
 	 * `order by` information.
 	 */
 	int			ordNumCols;		/* number of sort-key columns */
-	AttrNumber *ordColIdx;		/* their indexes in the target list */
-	Oid		   *ordOperators;	/* OIDs of operators to sort them by */
-	Oid		   *ordCollations;	/* OIDs of collations */
-	bool	   *ordNullsFirst;	/* NULLS FIRST/LAST directions */
+	AttrNumber *ordColIdx pg_node_attr(array_size(ordNumCols));		/* their indexes in the target list */
+	Oid		   *ordOperators pg_node_attr(array_size(ordNumCols));	/* OIDs of operators to sort them by */
+	Oid		   *ordCollations pg_node_attr(array_size(ordNumCols));	/* OIDs of collations */
+	bool	   *ordNullsFirst pg_node_attr(array_size(ordNumCols));	/* NULLS FIRST/LAST directions */
 
 	int			frameOptions;	/* frame_clause options, see WindowDef */
 	Node	   *startOffset;	/* expression for starting bound, if any */
@@ -1892,6 +1892,8 @@ typedef enum MotionType
  */
 typedef struct Motion
 {
+	pg_node_attr(custom_copy_equal)
+
 	Plan		plan;
 
 	MotionType  motionType;
