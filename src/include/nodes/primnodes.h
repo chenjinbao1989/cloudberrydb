@@ -508,15 +508,15 @@ typedef struct Aggref
 	AggSplit	aggsplit pg_node_attr(query_jumble_ignore);
 
 	/* unique ID within the Agg node */
-	int			aggno pg_node_attr(query_jumble_ignore);
+	int			aggno pg_node_attr(equal_ignore, query_jumble_ignore);
 
 	/* unique ID of transition state in the Agg */
-	int			aggtransno pg_node_attr(query_jumble_ignore);
+	int			aggtransno pg_node_attr(equal_ignore, query_jumble_ignore);
 
 	/* token location, or -1 if unknown */
 	int			location;
 
-	int         agg_expr_id;    /* gpdb private, if aggref is distinct qualified, record AggExprId value in tuple split */
+	int         agg_expr_id pg_node_attr(equal_ignore);    /* gpdb private, if aggref is distinct qualified, record AggExprId value in tuple split */
 
 } Aggref;
 

@@ -95,6 +95,10 @@ $(top_builddir)/src/include/nodes/header-stamp: node-support-stamp
 # so make sure those are generated before compiling.
 copyfuncs.o: copyfuncs.c copyfuncs.funcs.c copyfuncs.switch.c | node-support-stamp
 
+# equalfuncs.c #includes equalfuncs.funcs.c and equalfuncs.switch.c,
+# so make sure those are generated before compiling.
+equalfuncs.o: equalfuncs.c equalfuncs.funcs.c equalfuncs.switch.c | node-support-stamp
+
 # readfast.c #includes readfuncs.c. Same with outfast.c and outfuncs.c
 readfast.o: readfuncs.c readfast.c readfuncs_common.c
 outfast.o: outfuncs.c outfast.c outfuncs_common.c
