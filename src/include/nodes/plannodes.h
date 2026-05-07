@@ -77,7 +77,7 @@ typedef enum DMLAction
  */
 typedef struct PlannedStmt
 {
-	pg_node_attr(custom_copy_equal, no_equal, no_query_jumble)
+	pg_node_attr(custom_copy_equal, custom_read_write, no_equal, no_query_jumble)
 
 	NodeTag		type;
 
@@ -210,6 +210,8 @@ typedef enum FlowType
  */
 typedef struct Flow
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;			/* T_Flow */
 	FlowType	flotype;		/* Type of flow produced by the plan. */
 
@@ -272,7 +274,7 @@ typedef struct PlanSlice
  */
 typedef struct Plan
 {
-	pg_node_attr(abstract, no_equal, no_query_jumble)
+	pg_node_attr(abstract, no_equal, no_query_jumble, custom_read_write)
 
 	NodeTag		type;
 
@@ -2244,7 +2246,7 @@ typedef struct PartitionPruneStepCombine
  */
 typedef struct PlanInvalItem
 {
-	pg_node_attr(no_equal, no_query_jumble)
+	pg_node_attr(no_equal, no_query_jumble, custom_read_write)
 
 	NodeTag		type;
 	int			cacheId;		/* a syscache ID, see utils/syscache.h */

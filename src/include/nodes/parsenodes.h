@@ -152,6 +152,8 @@ typedef uint8 ParentStmtType;
  */
 typedef struct Query
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 
 	CmdType		commandType;	/* select|insert|update|delete|merge|utility */
@@ -313,6 +315,8 @@ typedef struct Query
  */
 typedef struct TypeName
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	List	   *names;			/* qualified name (list of String nodes) */
 	Oid			typeOid;		/* type identified by OID */
@@ -418,6 +422,8 @@ typedef struct A_Const
  */
 typedef struct TypeCast
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	Node	   *arg;			/* the expression being casted */
 	TypeName   *typeName;		/* the target type */
@@ -429,6 +435,8 @@ typedef struct TypeCast
  */
 typedef struct CollateClause
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	Node	   *arg;			/* input expression */
 	List	   *collname;		/* possibly-qualified collation name */
@@ -471,6 +479,8 @@ typedef struct RoleSpec
  */
 typedef struct FuncCall
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	List	   *funcname;		/* qualified name of function */
 	List	   *args;			/* the arguments (list of exprs) */
@@ -663,6 +673,8 @@ typedef struct WindowDef
  */
 typedef struct RangeSubselect
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	bool		lateral;		/* does it have LATERAL prefix? */
 	Node	   *subquery;		/* the untransformed sub-select clause */
@@ -685,6 +697,8 @@ typedef struct RangeSubselect
  */
 typedef struct RangeFunction
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	bool		lateral;		/* does it have LATERAL prefix? */
 	bool		ordinality;		/* does it have WITH ORDINALITY suffix? */
@@ -700,6 +714,8 @@ typedef struct RangeFunction
  */
 typedef struct RangeTableFunc
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	bool		lateral;		/* does it have LATERAL prefix? */
 	Node	   *docexpr;		/* document expression */
@@ -718,6 +734,8 @@ typedef struct RangeTableFunc
  */
 typedef struct RangeTableFuncCol
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	char	   *colname;		/* name of generated column */
 	TypeName   *typeName;		/* type of generated column */
@@ -768,7 +786,7 @@ typedef struct RangeTableSample
  */
 typedef struct ColumnDef
 {
-	pg_node_attr(custom_copy_equal)
+	pg_node_attr(custom_copy_equal, custom_read_write)
 
 	NodeTag		type;
 	char	   *colname;		/* name of column */
@@ -811,6 +829,8 @@ typedef struct ColumnDef
  */
 typedef struct TableLikeClause
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	RangeVar   *relation;
 	bits32		options;		/* OR of TableLikeOption flags */
@@ -840,6 +860,8 @@ typedef enum TableLikeOption
  */
 typedef struct IndexElem
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	char	   *name;			/* name of attribute to index, or NULL */
 	Node	   *expr;			/* expression to index, or NULL */
@@ -882,6 +904,8 @@ typedef enum DefElemAction
 
 typedef struct DefElem
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	char	   *defnamespace;	/* NULL if unqualified name */
 	char	   *defname;
@@ -902,6 +926,8 @@ typedef struct DefElem
  */
 typedef struct LockingClause
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	List	   *lockedRels;		/* FOR [KEY] UPDATE/SHARE relations */
 	LockClauseStrength strength;
@@ -913,6 +939,8 @@ typedef struct LockingClause
  */
 typedef struct XmlSerialize
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	XmlOptionType xmloption;	/* DOCUMENT or CONTENT */
 	Node	   *expr;
@@ -968,8 +996,8 @@ typedef struct PartitionSpec
 	PartitionStrategy strategy;
 	List	   *partParams;		/* List of PartitionElems */
 
-	struct GpPartitionDefinition *gpPartDef;
-	struct PartitionSpec         *subPartSpec;     /* subpartition specification */
+	struct GpPartitionDefinition *gpPartDef pg_node_attr(read_write_ignore);
+	struct PartitionSpec         *subPartSpec pg_node_attr(read_write_ignore);     /* subpartition specification */
 	int                          location;		/* token location, or -1 if unknown */
 } PartitionSpec;
 
@@ -1408,6 +1436,8 @@ typedef struct RTEPermissionInfo
  */
 typedef struct RangeTblFunction
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 
 	Node	   *funcexpr;		/* expression tree for func call */
@@ -1637,7 +1667,7 @@ typedef struct WindowClause
 	Node	   *startOffset;	/* expression for starting bound, if any */
 	Node	   *endOffset;		/* expression for ending bound, if any */
 	/* qual to help short-circuit execution */
-	List	   *runCondition pg_node_attr(query_jumble_ignore);
+	List	   *runCondition pg_node_attr(query_jumble_ignore, read_write_ignore);
 	/* in_range function for startOffset */
 	Oid			startInRangeFunc pg_node_attr(query_jumble_ignore);
 	/* in_range function for endOffset */
@@ -1845,6 +1875,8 @@ typedef struct MergeAction
  */
 typedef struct TriggerTransition
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	char	   *name;
 	bool		isNew;
@@ -2212,6 +2244,8 @@ typedef struct ReturnStmt
  */
 typedef struct PLAssignStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 
 	char	   *name;			/* initial column name */
@@ -2857,7 +2891,7 @@ typedef struct CreateStmt
 	char	   *tablespacename; /* table space to use, or NULL */
 	char	   *accessMethod;	/* table access method */
 	bool		if_not_exists;	/* just do nothing if it already exists? */
-	bool 		gp_style_alter_part; /* unused */
+	bool 		gp_style_alter_part pg_node_attr(read_write_ignore); /* unused */
 
 	DistributedBy *distributedBy;   /* what columns we distribute the data by */
 	Node       *partitionBy;     /* what columns we partition the data by */
@@ -4010,6 +4044,8 @@ typedef struct CreateStatsStmt
  */
 typedef struct StatsElem
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	char	   *name;			/* name of attribute to index, or NULL */
 	Node	   *expr;			/* expression to index, or NULL */

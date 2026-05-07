@@ -425,6 +425,10 @@ foreach my $infile (@ARGV)
 						  if elem $supertype, @no_read;
 						push @no_query_jumble, $in_struct
 						  if elem $supertype, @no_query_jumble;
+						push @custom_read_write, $in_struct
+						  if elem $supertype, @custom_read_write;
+						push @special_read_write, $in_struct
+						  if elem $supertype, @special_read_write;
 					}
 				}
 
@@ -921,6 +925,183 @@ close $cff;
 close $eff;
 close $cfs;
 close $efs;
+
+
+# outfuncs.c
+
+push @output_files, 'outfuncs.funcs.c';
+open my $off, '>', "$output_path/outfuncs.funcs.c$tmpext" or die $!;
+push @output_files, 'outfuncs.switch.c';
+open my $ofs, '>', "$output_path/outfuncs.switch.c$tmpext" or die $!;
+
+printf $off $header_comment, 'outfuncs.funcs.c';
+printf $ofs $header_comment, 'outfuncs.switch.c';
+
+print $off $node_includes;
+
+# scalar type -> WRITE_*_FIELD macro
+my %write_macro = (
+	'bool'             => 'WRITE_BOOL_FIELD',
+	'char'             => 'WRITE_CHAR_FIELD',
+	'double'           => 'WRITE_FLOAT_FIELD',
+	'Cost'             => 'WRITE_FLOAT_FIELD',
+	'Cardinality'      => 'WRITE_FLOAT_FIELD',
+	'Selectivity'      => 'WRITE_FLOAT_FIELD',
+	'int'              => 'WRITE_INT_FIELD',
+	'int8'             => 'WRITE_INT_FIELD',
+	'int16'            => 'WRITE_INT_FIELD',
+	'int32'            => 'WRITE_INT_FIELD',
+	'int64'            => 'WRITE_INT_FIELD',
+	'AttrNumber'       => 'WRITE_INT_FIELD',
+	'StrategyNumber'   => 'WRITE_INT_FIELD',
+	'TimeLineID'       => 'WRITE_INT_FIELD',
+	'uint8'            => 'WRITE_UINT_FIELD',
+	'uint16'           => 'WRITE_UINT_FIELD',
+	'uint32'           => 'WRITE_UINT_FIELD',
+	'bits32'           => 'WRITE_UINT_FIELD',
+	'AclMode'          => 'WRITE_UINT_FIELD',
+	'SubTransactionId' => 'WRITE_UINT_FIELD',
+	'Index'            => 'WRITE_UINT_FIELD',
+	'uint64'           => 'WRITE_UINT64_FIELD',
+	'XLogRecPtr'       => 'WRITE_UINT64_FIELD',
+	'Oid'              => 'WRITE_OID_FIELD',
+	'RelFileNumber'    => 'WRITE_OID_FIELD',
+	'long'             => 'WRITE_LONG_FIELD',
+	'Size'             => 'WRITE_LONG_FIELD',
+);
+
+# scalar array element type -> WRITE_*_ARRAY macro
+my %write_array_macro = (
+	'Oid'        => 'WRITE_OID_ARRAY',
+	'AttrNumber' => 'WRITE_ATTRNUMBER_ARRAY',
+	'int'        => 'WRITE_INT_ARRAY',
+	'int16'      => 'WRITE_INT_ARRAY',
+	'int32'      => 'WRITE_INT_ARRAY',
+	'bool'       => 'WRITE_BOOL_ARRAY',
+);
+
+foreach my $n (@node_types)
+{
+	next if elem $n, @abstract_types;
+	next if elem $n, @nodetag_only;
+	next if elem $n, @no_read;
+
+	# generate switch case
+	print $ofs "\t\tcase T_${n}:\n"
+	  . "\t\t\t_out${n}(str, obj);\n"
+	  . "\t\t\tbreak;\n";
+
+	# skip generated function body for custom/special nodes
+	next if elem $n, @custom_read_write;
+	next if elem $n, @special_read_write;
+
+	# produce WRITE_NODE_TYPE label: uppercase the node name
+	my $label = uc($n);
+
+	print $off "
+static void
+_out${n}(StringInfo str, const ${n} *node)
+{
+\tWRITE_NODE_TYPE(\"${label}\");
+
+";
+
+	foreach my $f (@{ $node_type_info{$n}->{fields} })
+	{
+		my $t  = $node_type_info{$n}->{field_types}{$f};
+		my @a  = @{ $node_type_info{$n}->{field_attrs}{$f} };
+
+		# skip fields marked read_write_ignore
+		next if grep { $_ eq 'read_write_ignore' } @a;
+
+		my $array_size_field;
+		foreach my $attr (@a)
+		{
+			if ($attr =~ /^array_size\(([\w.]+)\)$/)
+			{
+				$array_size_field = $1;
+			}
+		}
+
+		if ($t eq 'int' && $f =~ /location$/)
+		{
+			print $off "\tWRITE_LOCATION_FIELD($f);\n";
+		}
+		elsif ($t eq 'char*')
+		{
+			print $off "\tWRITE_STRING_FIELD($f);\n";
+		}
+		elsif ($t eq 'Bitmapset*' || $t eq 'Relids')
+		{
+			print $off "\tWRITE_BITMAPSET_FIELD($f);\n";
+		}
+		elsif (exists $write_macro{$t})
+		{
+			print $off "\t$write_macro{$t}($f);\n";
+		}
+		elsif (grep { $_ eq $t } @enum_types)
+		{
+			print $off "\tWRITE_ENUM_FIELD($f, $t);\n";
+		}
+		elsif (($t =~ /^(\w+)\*$/ or $t =~ /^struct\s+(\w+)\*$/)
+			and elem $1, @node_types)
+		{
+			print $off "\tWRITE_NODE_FIELD($f);\n";
+		}
+		elsif ($t =~ /^(\w+)\*$/ and exists $write_array_macro{$1})
+		{
+			my $elem_t = $1;
+			if (!defined $array_size_field)
+			{
+				die "no array_size for $n.$f of type $t\n";
+			}
+			my $macro = $write_array_macro{$elem_t};
+			my $size_expr;
+			if ($node_type_info{$n}->{field_types}{$array_size_field} eq 'List*')
+			{
+				$size_expr = "list_length(node->$array_size_field)";
+			}
+			else
+			{
+				$size_expr = "node->$array_size_field";
+			}
+			print $off "\t${macro}($f, $size_expr);\n";
+		}
+		elsif ($t =~ /^(\w+)\*$/ and elem $1, @scalar_types)
+		{
+			# scalar pointer array with no known array macro — needs annotation
+			die
+			  "could not handle type \"$t\" for field $n.$f in outfuncs: "
+			  . "add pg_node_attr(read_write_ignore) or a write_only_* annotation\n";
+		}
+		elsif ($t =~ /^\w+\[\w+\]$/)
+		{
+			# inline fixed-size array — needs custom handling
+			die
+			  "could not handle inline array type \"$t\" for field $n.$f in outfuncs: "
+			  . "mark the node custom_read_write or add pg_node_attr(read_write_ignore)\n";
+		}
+		elsif ($t eq 'function pointer')
+		{
+			# function pointers are not serialized
+		}
+		elsif ($t eq 'struct CustomPathMethods*'
+			|| $t eq 'struct CustomScanMethods*')
+		{
+			# not serialized
+		}
+		else
+		{
+			die "could not handle type \"$t\" for field $n.$f in outfuncs\n";
+		}
+	}
+
+	print $off "}\n";
+}
+
+close $off;
+close $ofs;
+
 
 # now rename the temporary files to their final names
 foreach my $file (@output_files)

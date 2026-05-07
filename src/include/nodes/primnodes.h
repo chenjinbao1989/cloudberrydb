@@ -499,7 +499,7 @@ typedef struct Aggref
 	char		aggkind pg_node_attr(query_jumble_ignore);
 
 	/* aggregate input already sorted */
-	bool		aggpresorted pg_node_attr(equal_ignore, query_jumble_ignore);
+	bool		aggpresorted pg_node_attr(equal_ignore, query_jumble_ignore, read_write_ignore);
 
 	/* > 0 if agg belongs to outer query */
 	Index		agglevelsup pg_node_attr(query_jumble_ignore);
@@ -955,7 +955,7 @@ typedef struct ScalarArrayOpExpr
 	Oid			hashfuncid pg_node_attr(equal_ignore_if_zero, query_jumble_ignore);
 
 	/* PG_PROC OID of negator of opfuncid function or InvalidOid.  See above */
-	Oid			negfuncid pg_node_attr(equal_ignore_if_zero, query_jumble_ignore);
+	Oid			negfuncid pg_node_attr(equal_ignore_if_zero, query_jumble_ignore, read_write_ignore);
 
 	/* true for ANY, false for ALL */
 	bool		useOr;
@@ -1691,7 +1691,7 @@ typedef struct XmlExpr
 	/* DOCUMENT or CONTENT */
 	XmlOptionType xmloption pg_node_attr(query_jumble_ignore);
 	/* INDENT option for XMLSERIALIZE */
-	bool		indent;
+	bool		indent pg_node_attr(read_write_ignore);
 	/* target type/typmod for XMLSERIALIZE */
 	Oid			type pg_node_attr(query_jumble_ignore);
 	int32		typmod pg_node_attr(query_jumble_ignore);
