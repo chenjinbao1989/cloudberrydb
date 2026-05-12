@@ -99,12 +99,19 @@ copyfuncs.o: copyfuncs.c copyfuncs.funcs.c copyfuncs.switch.c | node-support-sta
 # so make sure those are generated before compiling.
 equalfuncs.o: equalfuncs.c equalfuncs.funcs.c equalfuncs.switch.c | node-support-stamp
 
-# readfast.c #includes readfuncs.c. Same with outfast.c and outfuncs.c
+# readfast.c #includes readfuncs.c.
 readfast.o: readfuncs.c readfast.c readfuncs_common.c
-outfast.o: outfuncs.c outfast.c outfuncs_common.c
+
+# outfuncs.c #includes outfuncs.funcs.c and outfuncs.switch.c,
+# so make sure those are generated before compiling.
+outfuncs.o: outfuncs.c outfuncs.funcs.c outfuncs.switch.c outfuncs_common.c | node-support-stamp
+
+# outfast.c #includes outfuncs.c which in turn #includes outfuncs.funcs.c and outfuncs.switch.c.
+outfast.o: outfuncs.c outfast.c outfuncs_common.c outfuncs.funcs.c outfuncs.switch.c | node-support-stamp
 
 include $(top_srcdir)/src/backend/common.mk
 
 maintainer-clean: clean
 	rm -f node-support-stamp copyfuncs.funcs.c copyfuncs.switch.c \
-		equalfuncs.funcs.c equalfuncs.switch.c nodetags.h
+		equalfuncs.funcs.c equalfuncs.switch.c \
+		outfuncs.funcs.c outfuncs.switch.c nodetags.h

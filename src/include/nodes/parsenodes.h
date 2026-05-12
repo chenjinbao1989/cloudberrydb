@@ -2126,6 +2126,8 @@ typedef struct DistributedBy
 
 typedef struct SelectStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 
 	/*
@@ -2876,6 +2878,8 @@ typedef enum CreateStmtOrigin
 
 typedef struct CreateStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	RangeVar   *relation;		/* relation to create */
 	List	   *tableElts;		/* column definitions (list of ColumnDef) */
@@ -3349,6 +3353,8 @@ typedef struct DropStorageServerStmt
 
 typedef struct CreateForeignTableStmt
 {
+	pg_node_attr(custom_read_write)
+
 	CreateStmt	base;
 	char	   *servername;
 	List	   *options;
@@ -3809,6 +3815,8 @@ typedef struct AlterOpFamilyStmt
  */
 typedef struct CreateDirectoryTableStmt
 {
+	pg_node_attr(custom_read_write)
+
 	CreateStmt	base;
 	char	   *tablespacename;
 	char       *location;   /* dtlocation for pg_directory_table */
