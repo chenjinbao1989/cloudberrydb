@@ -980,11 +980,6 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 			 * blunder into the middle of the plan rather than entering at the
 			 * root.
 			 */
-
-			MotionState *motionState = getMotionState(queryDesc->planstate, LocallyExecutingSliceIndex(estate));
-
-			Assert(motionState);
-
 			ExecutePlan(queryDesc,
 						amIParallel,
 						CMD_SELECT,
