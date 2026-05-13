@@ -78,6 +78,10 @@
 #define WRITE_UINT64_FIELD(fldname) \
 	appendBinaryStringInfo(str, (const char *)&node->fldname, sizeof(uint64))
 
+/* Write a 64-bit integer field */
+#define WRITE_INT64_FIELD(fldname) \
+	appendBinaryStringInfo(str, (const char *)&node->fldname, sizeof(int64))
+
 /* Write an OID field (don't hard-wire assumption that OID is same as uint) */
 #define WRITE_OID_FIELD(fldname) \
 	appendBinaryStringInfo(str, (const char *)&node->fldname, sizeof(Oid))

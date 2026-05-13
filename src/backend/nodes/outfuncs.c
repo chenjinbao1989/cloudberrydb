@@ -81,6 +81,11 @@ static void outDouble(StringInfo str, double d);
 	appendStringInfo(str, " :" CppAsString(fldname) " " UINT64_FORMAT, \
 					 node->fldname)
 
+/* Write a 64-bit integer field (anything written with INT64_FORMAT) */
+#define WRITE_INT64_FIELD(fldname) \
+	appendStringInfo(str, " :" CppAsString(fldname) " " INT64_FORMAT, \
+					 node->fldname)
+
 /* Write an OID field (don't hard-wire assumption that OID is same as uint) */
 #define WRITE_OID_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
