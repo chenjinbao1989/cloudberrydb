@@ -2033,6 +2033,8 @@ typedef struct RawStmt
  */
 typedef struct InsertStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	RangeVar   *relation;		/* relation to insert into */
 	List	   *cols;			/* optional: names of the target columns */
@@ -2797,6 +2799,8 @@ typedef struct AlterDefaultPrivilegesStmt
  */
 typedef struct CopyStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	RangeVar   *relation;		/* the relation to copy */
 	Node	   *query;			/* the query (SELECT or DML statement with
@@ -3500,6 +3504,8 @@ typedef struct CreateAmStmt
  */
 typedef struct CreateTrigStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	bool		replace;		/* replace trigger if already exists */
 	bool		isconstraint;	/* This is a constraint trigger */
@@ -4785,6 +4791,8 @@ typedef enum AlterTSConfigType
 
 typedef struct AlterTSConfigurationStmt
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 	AlterTSConfigType kind;		/* ALTER_TSCONFIG_ADD_MAPPING, etc */
 	List	   *cfgname;		/* qualified name (list of String) */

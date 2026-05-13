@@ -933,9 +933,12 @@ push @output_files, 'outfuncs.funcs.c';
 open my $off, '>', "$output_path/outfuncs.funcs.c$tmpext" or die $!;
 push @output_files, 'outfuncs.switch.c';
 open my $ofs, '>', "$output_path/outfuncs.switch.c$tmpext" or die $!;
+push @output_files, 'outfast.switch.c';
+open my $ofbs, '>', "$output_path/outfast.switch.c$tmpext" or die $!;
 
 printf $off $header_comment, 'outfuncs.funcs.c';
 printf $ofs $header_comment, 'outfuncs.switch.c';
+printf $ofbs $header_comment, 'outfast.switch.c';
 
 print $off $node_includes;
 
@@ -986,7 +989,7 @@ foreach my $n (@node_types)
 	next if elem $n, @nodetag_only;
 	next if elem $n, @no_read;
 
-	# generate switch case
+	# generate switch case for text outfuncs
 	print $ofs "\t\tcase T_${n}:\n"
 	  . "\t\t\t_out${n}(str, obj);\n"
 	  . "\t\t\tbreak;\n";
@@ -994,6 +997,11 @@ foreach my $n (@node_types)
 	# skip generated function body for custom/special nodes
 	next if elem $n, @custom_read_write;
 	next if elem $n, @special_read_write;
+
+	# generate switch case for binary outfast (only nodes with auto-generated bodies)
+	print $ofbs "\t\tcase T_${n}:\n"
+	  . "\t\t\t_out${n}(str, obj);\n"
+	  . "\t\t\tbreak;\n";
 
 	# produce WRITE_NODE_TYPE label: uppercase the node name
 	my $label = uc($n);
@@ -1101,6 +1109,7 @@ _out${n}(StringInfo str, const ${n} *node)
 
 close $off;
 close $ofs;
+close $ofbs;
 
 
 # now rename the temporary files to their final names

@@ -1736,6 +1736,8 @@ typedef struct PathKey
  */
 typedef struct DistributionKey
 {
+	pg_node_attr(no_read)
+
 	NodeTag		type;
 
 	List	   *dk_eclasses;	/* the value that is distributed */

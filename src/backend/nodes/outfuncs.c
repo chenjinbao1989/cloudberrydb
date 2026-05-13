@@ -339,6 +339,12 @@ outBitmapset(StringInfo str, const Bitmapset *bms)
 	appendStringInfoChar(str, ')');
 }
 
+static void
+_outBitmapset(StringInfo str, const Bitmapset *node)
+{
+	outBitmapset(str, node);
+}
+
 /*
  * Print the value of a Datum given its type.
  */
@@ -380,7 +386,9 @@ outDatum(StringInfo str, Datum value, int typlen, bool typbyval)
  *				 generated out functions
  * ****************************************************************
  */
+#ifndef COMPILING_BINARY_FUNCS
 #include "outfuncs.funcs.c"
+#endif /* COMPILING_BINARY_FUNCS */
 
 
 /*
@@ -2831,7 +2839,7 @@ _outRangeTblFunction(StringInfo str, const RangeTblFunction *node)
 
 #ifndef COMPILING_BINARY_FUNCS
 static void
-_outAExpr(StringInfo str, const A_Expr *node)
+_outA_Expr(StringInfo str, const A_Expr *node)
 {
 	WRITE_NODE_TYPE("AEXPR");
 
@@ -2963,7 +2971,7 @@ _outBitString(StringInfo str, const BitString *node)
 }
 
 static void
-_outAConst(StringInfo str, const A_Const *node)
+_outA_Const(StringInfo str, const A_Const *node)
 {
 	WRITE_NODE_TYPE("A_CONST");
 
