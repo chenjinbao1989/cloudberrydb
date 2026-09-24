@@ -168,3 +168,23 @@ drop table multiagg_with_subquery;
 
 -- Unique node numGroups > 0 assertion
 SELECT DISTINCT avg(c1) FROM generate_series(1,2) c1;
+
+-- Grouping by a constant expression (e.g. NULL::int) gets optimized away by
+-- the planner (processed_groupClause becomes empty, since grouping by a
+-- constant produces at most one group). With no aggregates and no remaining
+-- group clause, add_first_stage_group_agg_path() in cdbgroupingpaths.c used
+-- to hit its "should never happen" Assert(false), crashing the backend.
+-- This is the exact query shape madlib's graph_bfs() and logregr_train()
+-- generate internally (a constant placeholder column used as the grouping
+-- key for an iteration's intermediate state table).
+create table gp_aggregates_groupby_const (a int, b int) distributed by (a);
+insert into gp_aggregates_groupby_const values (1, 2), (3, 4);
+explain (costs off)
+select null::int as c1, 0::int as c2 from gp_aggregates_groupby_const group by c1;
+select null::int as c1, 0::int as c2 from gp_aggregates_groupby_const group by c1;
+-- same shape but with a WHERE clause and multiple constant grouping columns
+select 2 as id, 0 as dist, null::int as parent
+from gp_aggregates_groupby_const
+where (a = 2 or b = 2)
+group by id, dist;
+drop table gp_aggregates_groupby_const;

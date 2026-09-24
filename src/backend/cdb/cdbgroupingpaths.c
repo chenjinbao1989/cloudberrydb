@@ -1121,7 +1121,28 @@ add_first_stage_group_agg_path(PlannerInfo *root,
 	}
 	else
 	{
-		Assert(false);
+		/*
+		 * No aggregates, no DISTINCT ON, no grouping sets, and the group
+		 * clause was optimized away to empty by the planner (e.g. GROUP BY
+		 * on a constant expression, which produces at most one group).
+		 * There's nothing left to group or aggregate on; add a degenerate
+		 * single-group pass-through path instead of asserting, since this
+		 * is a real query shape (not an internal inconsistency).
+		 */
+		add_path(ctx->partial_rel,
+			(Path *) create_agg_path(root,
+									 ctx->partial_rel,
+									 path,
+									 ctx->partial_grouping_target,
+									 AGG_PLAIN,
+									 AGGSPLIT_SIMPLE,
+									 false, /* streaming */
+									 NIL,
+									 NIL,
+									 ctx->agg_partial_costs,
+									 estimate_num_groups_on_segment(ctx->dNumGroupsTotal,
+																	path->rows, path->locus)),
+				 root);
 	}
 }
 
