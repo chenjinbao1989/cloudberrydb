@@ -94,10 +94,40 @@ typedef struct MCVList
 	MCVItem		items[FLEXIBLE_ARRAY_MEMBER];	/* array of MCV items */
 } MCVList;
 
+/* used to flag stats serialized to bytea */
+#define STATS_JOINSAMPLE_MAGIC		0x4A53504C	/* marks serialized bytea */
+#define STATS_JOINSAMPLE_TYPE_BASIC	1	/* basic joinsample type */
+
+/*
+ * GPDB: coordinated sample of the combinations of the columns (see
+ * joinsample.c)
+ */
+typedef struct MVJoinSampleItem
+{
+	uint64		hash;			/* hash of the combination */
+	double		count;			/* number of rows with it */
+} MVJoinSampleItem;
+
+typedef struct MVJoinSample
+{
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of joinsample (BASIC) */
+	uint32		nitems;			/* number of items in the array */
+	double		totalrows;		/* number of rows in the relation */
+	uint64		threshold;		/* all combinations with hash <= this */
+	MVJoinSampleItem items[FLEXIBLE_ARRAY_MEMBER];	/* sorted by hash */
+} MVJoinSample;
+
 
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid, bool inh);
 extern MVDependencies *statext_dependencies_load(Oid mvoid, bool inh, bool allow_null);
 extern MCVList *statext_mcv_load(Oid mvoid, bool inh);
+extern MVJoinSample *statext_joinsample_load(Oid mvoid, bool inh);
+extern Selectivity statext_joinsample_join_selectivity(PlannerInfo *root,
+													   Relids outer_relids,
+													   Relids inner_relids,
+													   SpecialJoinInfo *sjinfo,
+													   List **restrictlist);
 
 extern void BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 									   int numrows, HeapTuple *rows,

@@ -442,6 +442,11 @@ CTranslatorRelcacheToDXL::RetrieveExtStatsInfo(CMemoryPool *mp, IMDId *mdid)
 				statkind = CMDExtStatsInfo::EstatExpr;
 				break;
 			}
+			case STATS_EXT_JOINSAMPLE:
+			{
+				// GPDB: joinsample statistics are not used by ORCA
+				continue;
+			}
 			default:
 			{
 				GPOS_ASSERT(false && "Unknown extended stat type");

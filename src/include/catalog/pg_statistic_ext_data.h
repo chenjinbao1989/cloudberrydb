@@ -39,6 +39,7 @@ CATALOG(pg_statistic_ext_data,3429,StatisticExtDataRelationId)
 	pg_ndistinct stxdndistinct; /* ndistinct coefficients (serialized) */
 	pg_dependencies stxddependencies;	/* dependencies (serialized) */
 	pg_mcv_list stxdmcv;		/* MCV (serialized) */
+	bytea		stxdjoinsample; /* GPDB: joinsample (serialized) */
 	pg_statistic stxdexpr[1];	/* stats for expressions */
 
 #endif

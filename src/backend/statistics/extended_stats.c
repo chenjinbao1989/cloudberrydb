@@ -82,7 +82,8 @@ static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List
 											int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Oid statOid, bool inh,
 						  MVNDistinct *ndistinct, MVDependencies *dependencies,
-						  MCVList *mcv, Datum exprs, VacAttrStats **stats);
+						  MCVList *mcv, MVJoinSample *joinsample, Datum exprs,
+			  VacAttrStats **stats);
 static int	statext_compute_stattarget(int stattarget,
 									   int nattrs, VacAttrStats **stats);
 
@@ -160,6 +161,7 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 		MVNDistinct *ndistinct = NULL;
 		MVDependencies *dependencies = NULL;
 		MCVList    *mcv = NULL;
+		MVJoinSample *joinsample = NULL;
 		Datum		exprstats = (Datum) 0;
 		VacAttrStats **stats;
 		ListCell   *lc2;
@@ -231,6 +233,9 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 				dependencies = statext_dependencies_build(data);
 			else if (t == STATS_EXT_MCV)
 				mcv = statext_mcv_build(data, totalrows, stattarget);
+			else if (t == STATS_EXT_JOINSAMPLE)
+				joinsample = statext_joinsample_build(onerel, inh, totalrows,
+													  data, stattarget);
 			else if (t == STATS_EXT_EXPRESSIONS)
 			{
 				AnlExprData *exprdata;
@@ -253,7 +258,7 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 
 		/* store the statistics in the catalog */
 		statext_store(stat->statOid, inh,
-					  ndistinct, dependencies, mcv, exprstats, stats);
+					  ndistinct, dependencies, mcv, joinsample, exprstats, stats);
 
 		/* for reporting progress */
 		pgstat_progress_update_param(PROGRESS_ANALYZE_EXT_STATS_COMPUTED,
@@ -431,6 +436,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_data_stxdexpr;
 			break;
 
+		case STATS_EXT_JOINSAMPLE:
+			attnum = Anum_pg_statistic_ext_data_stxdjoinsample;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}
@@ -498,6 +507,7 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
 				   (enabled[i] == STATS_EXT_DEPENDENCIES) ||
 				   (enabled[i] == STATS_EXT_MCV) ||
+				   (enabled[i] == STATS_EXT_JOINSAMPLE) ||
 				   (enabled[i] == STATS_EXT_EXPRESSIONS));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
@@ -806,7 +816,8 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, List *exprs,
 static void
 statext_store(Oid statOid, bool inh,
 			  MVNDistinct *ndistinct, MVDependencies *dependencies,
-			  MCVList *mcv, Datum exprs, VacAttrStats **stats)
+			  MCVList *mcv, MVJoinSample *joinsample, Datum exprs,
+			  VacAttrStats **stats)
 {
 	Relation	pg_stextdata;
 	HeapTuple	stup;
@@ -850,6 +861,13 @@ statext_store(Oid statOid, bool inh,
 
 		nulls[Anum_pg_statistic_ext_data_stxdmcv - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_data_stxdmcv - 1] = PointerGetDatum(data);
+	}
+	if (joinsample != NULL)
+	{
+		bytea	   *data = statext_joinsample_serialize(joinsample);
+
+		nulls[Anum_pg_statistic_ext_data_stxdjoinsample - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_data_stxdjoinsample - 1] = PointerGetDatum(data);
 	}
 	if (exprs != (Datum) 0)
 	{

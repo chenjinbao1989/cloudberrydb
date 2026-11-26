@@ -106,7 +106,18 @@ CREATE STATISTICS [ [ IF NOT EXISTS ] <replaceable class="parameter">statistics_
       <literal>dependencies</literal>, which enables functional
       dependency statistics, and <literal>mcv</literal> which enables
       most-common values lists.
-      If this clause is omitted, all supported statistics kinds are
+      <literal>joinsample</literal> enables a coordinated sample of the
+      combinations of the columns, with their numbers of rows. When two
+      tables are joined on equalities of all the columns of joinsample
+      statistics on each of them, the number of matching rows is estimated
+      from the combinations the two samples have in common. The columns must
+      have the same types on both sides and correspond in the order of their
+      column numbers. Unless <command>ANALYZE</command> samples the whole
+      table, building it takes a scan of the whole table, so it is not
+      included when this clause is omitted, and it can't be built on
+      expressions.
+      If this clause is omitted, all supported statistics kinds other than
+      <literal>joinsample</literal> are
       included in the statistics object. Univariate expression statistics are
       built automatically if the statistics definition includes any complex
       expressions rather than just simple column references.
@@ -173,9 +184,12 @@ CREATE STATISTICS [ [ IF NOT EXISTS ] <replaceable class="parameter">statistics_
   </para>
 
   <para>
-   Extended statistics are not currently used by the planner for selectivity
-   estimations made for table joins.  This limitation will likely be removed
-   in a future version of <productname>PostgreSQL</productname>.
+   Extended statistics other than <literal>joinsample</literal> are not
+   currently used by the planner for selectivity estimations made for table
+   joins.  This limitation will likely be removed in a future version of
+   <productname>PostgreSQL</productname>.  <literal>joinsample</literal>
+   statistics are used only for inner joins, and only when both tables have
+   them.
   </para>
  </refsect1>
 

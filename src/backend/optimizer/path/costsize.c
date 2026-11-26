@@ -97,6 +97,7 @@
 #include "optimizer/restrictinfo.h"
 #include "parser/parse_expr.h"
 #include "parser/parsetree.h"
+#include "statistics/statistics.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
@@ -5778,6 +5779,16 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 											   inner_rel->relids,
 											   sjinfo,
 											   &restrictlist);
+
+	/*
+	 * GPDB: Likewise for groups of equality clauses between the same two
+	 * relations with joinsample statistics on their columns.
+	 */
+	fkselec *= statext_joinsample_join_selectivity(root,
+												   outer_rel->relids,
+												   inner_rel->relids,
+												   sjinfo,
+												   &restrictlist);
 
 	/*
 	 * For an outer join, we have to distinguish the selectivity of the join's

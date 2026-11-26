@@ -1641,6 +1641,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 	bool		ndistinct_enabled;
 	bool		dependencies_enabled;
 	bool		mcv_enabled;
+	bool		joinsample_enabled;
 	int			i;
 	List	   *context;
 	ListCell   *lc;
@@ -1709,6 +1710,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		ndistinct_enabled = false;
 		dependencies_enabled = false;
 		mcv_enabled = false;
+		joinsample_enabled = false;
 
 		for (i = 0; i < ARR_DIMS(arr)[0]; i++)
 		{
@@ -1718,6 +1720,8 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 				dependencies_enabled = true;
 			else if (enabled[i] == STATS_EXT_MCV)
 				mcv_enabled = true;
+			else if (enabled[i] == STATS_EXT_JOINSAMPLE)
+				joinsample_enabled = true;
 
 			/* ignore STATS_EXT_EXPRESSIONS (it's built automatically) */
 		}
@@ -1733,7 +1737,8 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		 * be an expression statistics. In that case we don't need to specify
 		 * kinds.
 		 */
-		if ((!ndistinct_enabled || !dependencies_enabled || !mcv_enabled) &&
+		if ((!ndistinct_enabled || !dependencies_enabled || !mcv_enabled ||
+			 joinsample_enabled) &&
 			(ncolumns > 1))
 		{
 			bool		gotone = false;
@@ -1753,7 +1758,13 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 			}
 
 			if (mcv_enabled)
+			{
 				appendStringInfo(&buf, "%smcv", gotone ? ", " : "");
+				gotone = true;
+			}
+
+			if (joinsample_enabled)
+				appendStringInfo(&buf, "%sjoinsample", gotone ? ", " : "");
 
 			appendStringInfoChar(&buf, ')');
 		}

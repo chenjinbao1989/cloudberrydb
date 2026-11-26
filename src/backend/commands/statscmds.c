@@ -87,12 +87,13 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	Oid			relid;
 	ObjectAddress parentobject,
 				myself;
-	Datum		types[4];		/* one for each possible type of statistic */
+	Datum		types[5];		/* one for each possible type of statistic */
 	int			ntypes;
 	ArrayType  *stxkind;
 	bool		build_ndistinct;
 	bool		build_dependencies;
 	bool		build_mcv;
+	bool		build_joinsample;
 	bool		build_expressions;
 	bool		requested_type = false;
 	int			i;
@@ -377,6 +378,7 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 	build_ndistinct = false;
 	build_dependencies = false;
 	build_mcv = false;
+	build_joinsample = false;
 	foreach(cell, stmt->stat_types)
 	{
 		char	   *type = strVal(lfirst(cell));
@@ -396,12 +398,26 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 			build_mcv = true;
 			requested_type = true;
 		}
+		else if (strcmp(type, "joinsample") == 0)
+		{
+			/*
+			 * GPDB: not built by default, because it takes a scan of the
+			 * whole relation.
+			 */
+			build_joinsample = true;
+			requested_type = true;
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("unrecognized statistics kind \"%s\"",
 							type)));
 	}
+
+	if (build_joinsample && (stxexprs != NIL || numcols < 2))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("joinsample statistics can only be built on two or more columns, without expressions")));
 
 	/*
 	 * If no statistic type was specified, build them all (but only when the
@@ -495,6 +511,8 @@ CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 		types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
 	if (build_mcv)
 		types[ntypes++] = CharGetDatum(STATS_EXT_MCV);
+	if (build_joinsample)
+		types[ntypes++] = CharGetDatum(STATS_EXT_JOINSAMPLE);
 	if (build_expressions)
 		types[ntypes++] = CharGetDatum(STATS_EXT_EXPRESSIONS);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));

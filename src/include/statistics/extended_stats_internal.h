@@ -82,6 +82,13 @@ extern MCVList *statext_mcv_build(StatsBuildData *data,
 extern bytea *statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats);
 extern MCVList *statext_mcv_deserialize(bytea *data);
 
+extern MVJoinSample *statext_joinsample_build(Relation rel, bool inh,
+											  double totalrows,
+											  StatsBuildData *data,
+											  int stattarget);
+extern bytea *statext_joinsample_serialize(MVJoinSample *joinsample);
+extern MVJoinSample *statext_joinsample_deserialize(bytea *data);
+
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
 									 Oid oper, Oid collation);

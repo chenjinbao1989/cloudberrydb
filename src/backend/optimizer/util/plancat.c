@@ -1787,6 +1787,20 @@ get_relation_statistics_worker(List **stainfos, RelOptInfo *rel,
 		*stainfos = lappend(*stainfos, info);
 	}
 
+	if (statext_is_kind_built(dtup, STATS_EXT_JOINSAMPLE))
+	{
+		StatisticExtInfo *info = makeNode(StatisticExtInfo);
+
+		info->statOid = statOid;
+		info->inherit = dataForm->stxdinherit;
+		info->rel = rel;
+		info->kind = STATS_EXT_JOINSAMPLE;
+		info->keys = bms_copy(keys);
+		info->exprs = exprs;
+
+		*stainfos = lappend(*stainfos, info);
+	}
+
 	if (statext_is_kind_built(dtup, STATS_EXT_EXPRESSIONS))
 	{
 		StatisticExtInfo *info = makeNode(StatisticExtInfo);
